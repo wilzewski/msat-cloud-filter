@@ -63,12 +63,12 @@ class cloudFilter(object):
 
         print('read_l1()')
         self.l1_sza, self.l1_alb, self.l1_ref, \
-             self.cloud_truth, l1_lon, l1_lat = self.read_l1()
+             self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = self.read_l1()
 
         print('read_msi()')
-        self.msi_ref = self.read_msi(l1_lon, l1_lat)
+        self.msi_ref = self.read_msi(l1_lon, l1_lat, l1_clon, l1_clat)
         
-    def read_msi(self, l1_lon, l1_lat):
+    def read_msi(self, l1_lon, l1_lat, l1_clon, l1_clat):
         import numpy as np
         import rasterio
         from scipy.interpolate import griddata
@@ -76,29 +76,20 @@ class cloudFilter(object):
         import pickle
         import sys
         import matplotlib.pyplot as plt
+        from shapely.geometry import Polygon, Point
+        from descartes.patch import PolygonPatch
 
         if self.data_type==0:
             # This function collects MSI data on a grid
-            # and interpolates an average reflectance to each
-            # l1 pixel using a fixed pixel size (as a first approximation
-            # since l1 pixels in OSSE are unevenly spaced). 
+            # and interpolates an average reflectance to each l1 pixel
 
-            l1_pseudo_pixel_size = 0.3   # somewhat representative value for OSSE
-            grid_spacing = l1_pseudo_pixel_size/2    # what is the best choice here?
+            grid_spacing = 0.15    # what is the best choice here?
 
-            save_file = 'msi_clim_0res15.pkl'
+            save_file = 'msi_clim_'+str(grid_spacing).split('.')[0]+'res'+str(grid_spacing).split('.')[1]+'.pkl'
             if save_file not in os.listdir():
-                print('Generating MSI Climatology')
-
-                #l1_lon_min = np.nanmin(l1_lon[np.abs(l1_lon)<=180])
-                #l1_lon_max = np.nanmax(l1_lon[np.abs(l1_lon)<=180])
-                #l1_lat_min = np.nanmin(l1_lat[np.abs(l1_lat)<=90])
-                #l1_lat_max = np.nanmax(l1_lat[np.abs(l1_lat)<=90])
+                print('Generating MSI Climatology file')
 
                 # set up grid on which to collect msi climatology data
-                #b = 2 * l1_pseudo_pixel_size # use a buffer for edge pixels
-                #lon = np.arange(l1_lon_min - b, l1_lon_max + b, grid_spacing)
-                #lat = np.arange(l1_lat_min - b, l1_lat_max + b, grid_spacing)
                 lon_min, lon_max, lat_min, lat_max = -180.0, 180.0, -90.0, 90.0
                 lon = np.arange(lon_min, lon_max, grid_spacing)
                 lat = np.arange(lat_min, lat_max, grid_spacing)
@@ -126,12 +117,8 @@ class cloudFilter(object):
                            min_lat<lat_min or max_lat>lat_max:
                             continue
                         c+=1
-                        #dlon = (corner4[0]-corner1[0])/width
-                        #dlat = (corner1[1]-corner4[1])/height
                         msi_lon, msi_lat = np.meshgrid(np.linspace(min_lon, max_lon, width),\
                                                        np.linspace(min_lat, max_lat, height))
-                        #print(lon, lat)
-                        #print('\n', msi_lon.shape, msi_lat.shape, img.shape);sys.exit()
                         msi = griddata((msi_lon.ravel(), msi_lat.ravel()), img.ravel(), (lon, lat))
                         msi[np.isnan(msi)] = 0.0
                         msi[msi_clim!=0] = 0.0          # no double registration
@@ -143,26 +130,54 @@ class cloudFilter(object):
                 pickle.dump([lon, lat, msi_clim], pkl_file)
                 pkl_file.close()
             else:
+                print('Read MSI Climatology file')
                 pkl_file = open(save_file, 'rb')
                 data = pickle.load(pkl_file)
                 lon = data[0]; lat = data[1]; msi_clim = data[2]
                 pkl_file.close()
 
-                l1_lon[np.abs(l1_lon)>180] = np.nan
-                l1_lat[np.abs(l1_lat)>90] = np.nan
+            # throw out l1 fill values
+            l1_clon[np.abs(l1_clon)>180] = np.nan
+            l1_clat[np.abs(l1_clat)>90] = np.nan
+            l1_lon[np.abs(l1_lon)>180] = np.nan
+            l1_lat[np.abs(l1_lat)>90] = np.nan
+            # reshape for pixel generation
+            act, alt = l1_lon.shape[0],l1_lon.shape[1]
+            l1_lon = l1_lon.reshape(l1_lon.shape[0]*l1_lon.shape[1])
+            l1_lat = l1_lat.reshape(l1_lat.shape[0]*l1_lat.shape[1])
+            l1_clon = l1_clon.reshape((l1_clon.shape[0], l1_clon.shape[1]*l1_clon.shape[2]))
+            l1_clat = l1_clat.reshape((l1_clat.shape[0], l1_clat.shape[1]*l1_clat.shape[2]))
+            
 
-                #poly = make_polygons(l1_lon, l1_lat)
-                
-                plt.pcolor(lon, lat, msi_clim)
-                plt.scatter(l1_lon, l1_lat, c=self.l1_sza, s=1)
-                plt.show()
+            pixels = []
+            for i in range(l1_lon.shape[0]):
+                c1 = (l1_clon[0,i], l1_clat[0,i])
+                c2 = (l1_clon[1,i], l1_clat[1,i])
+                c3 = (l1_clon[2,i], l1_clat[2,i])
+                c4 = (l1_clon[3,i], l1_clat[3,i])
+                if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
+                    continue
+                else:
+                    pixels.append( Polygon([c1, c2, c3, c4, c1]) ) 
+            
 
-                msi_ref = np.zeros(l1_lon.shape)
-                
-                #msi_ref = griddata((lon.ravel(), lat.ravel()), msi_clim.ravel(), (l1_lon, l1_lat))
-                msi_ref[np.isnan(l1_lon)]=np.nan
-                #print(msi_ref)
-                #print(msi_ref.shape)
+            mask = pixels[0].contains(Point(lon[240,15],lat[240,15]))
+            print(mask);sys.exit()
+
+            f, ax=plt.subplots(1)
+            ax.pcolor(lon, lat, msi_clim)
+            ax.scatter(l1_lon, l1_lat, c=self.l1_sza, s=1)
+            for pix in pixels:
+                patch = PolygonPatch(pix, facecolor='lightgreen', alpha=0.5, zorder=2)
+                ax.add_patch(patch)
+            plt.show()
+
+            msi_ref = np.zeros(l1_lon.shape)
+            
+            #msi_ref = griddata((lon.ravel(), lat.ravel()), msi_clim.ravel(), (l1_lon, l1_lat))
+            msi_ref[np.isnan(l1_lon.reshape(act, alt))]=np.nan
+            #print(msi_ref)
+            #print(msi_ref.shape)
                     
                     
 
@@ -178,7 +193,7 @@ class cloudFilter(object):
         import sys
         import numpy as np
 
-        sza, alb, lon, lat, xch4_true, cf, l1_ref, = [],[],[],[],[],[],[]
+        sza, alb, lon, lat, xch4_true, cf, l1_ref, clon, clat = [],[],[],[],[],[],[],[],[]
 
         if self.data_type==0:
             for f in self.l1_bundle:
@@ -215,6 +230,13 @@ class cloudFilter(object):
                 lon_tmp = np.pad(lon_tmp, (it0,0), 'constant', constant_values=(np.nan))
                 lon.append( lon_tmp )
 
+                clat_tmp = d.groups['Level1'].variables['CornerLatitudes'][:,it0:itf,ix0:ixf].T.squeeze()
+                clat_tmp = np.pad(clat_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
+                clat.append( clat_tmp )
+                clon_tmp = d.groups['Level1'].variables['CornerLongitudes'][:,it0:itf,ix0:ixf].T.squeeze()
+                clon_tmp = np.pad(clon_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
+                clon.append( clon_tmp )
+
                 #xch4_tmp = d.groups['Profile'].variables['CH4_ProxyMixingRatio'][0,it0:itf,ix0:ixf].T
                 #xch4_tmp = xch4_tmp[:].T.squeeze()
                 #xch4_true.append( np.pad(xch4_tmp, (it0,0), 'constant', constant_values=(np.nan)) )
@@ -222,7 +244,8 @@ class cloudFilter(object):
                 cf.append(self.get_cloud_fraction(self.truth_path, f, ix0, ixf))
 
             return np.array(sza).T, np.array(alb).T, np.array(l1_ref).T,\
-                     np.array(cf).T, np.array(lon).T, np.array(lat).T #, np.array(xch4_true).T
+                     np.array(cf).T, np.array(lon).T, np.array(lat).T,\
+                     np.array(clon).T, np.array(clat).T #, np.array(xch4_true).T
 
         #else:   TODO write MAIR L1 reader
             
