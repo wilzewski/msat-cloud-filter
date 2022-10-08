@@ -67,23 +67,32 @@ class cloudFilter(object):
 
         print('read_msi()')
         self.msi_ref = self.read_msi(l1_lon, l1_lat, l1_clon, l1_clat)
+
+    def mask_hits(self, points, c1, c2, c3, c4, out_shape):
+        # make mask indicating which points lie within a pixel
+        # with corners c1-4; reshape mask give out_shape
+        from matplotlib.path import Path
+        p = Path([c1, c2, c3, c4, c1])
+        hits = p.contains_points(points)
+        mask = hits.reshape(out_shape)
+        return mask
         
     def read_msi(self, l1_lon, l1_lat, l1_clon, l1_clat):
         import numpy as np
         import rasterio
+        import time
         from scipy.interpolate import griddata
         import os
         import pickle
         import sys
         import matplotlib.pyplot as plt
-        from shapely.geometry import Polygon, Point
-        from descartes.patch import PolygonPatch
+        from matplotlib.path import Path
 
         if self.data_type==0:
             # This function collects MSI data on a grid
             # and interpolates an average reflectance to each l1 pixel
 
-            grid_spacing = 0.15    # what is the best choice here?
+            grid_spacing = 0.05    # what is the best choice here?
 
             save_file = 'msi_clim_'+str(grid_spacing).split('.')[0]+'res'+str(grid_spacing).split('.')[1]+'.pkl'
             if save_file not in os.listdir():
@@ -96,7 +105,7 @@ class cloudFilter(object):
                 lon,lat = np.meshgrid(lon, lat)
                 
                 msi_clim = np.zeros(lon.shape)
-                c=0
+                #c=0
                 for f in sorted(os.listdir(self.msi_path)):
                     data = rasterio.open(self.msi_path+'/'+f, crs='EPSG:3857')
                     img = data.read(1)
@@ -116,25 +125,37 @@ class cloudFilter(object):
                         if min_lon<lon_min or max_lon>lon_max or\
                            min_lat<lat_min or max_lat>lat_max:
                             continue
-                        c+=1
+                        #c+=1
                         msi_lon, msi_lat = np.meshgrid(np.linspace(min_lon, max_lon, width),\
                                                        np.linspace(min_lat, max_lat, height))
                         msi = griddata((msi_lon.ravel(), msi_lat.ravel()), img.ravel(), (lon, lat))
                         msi[np.isnan(msi)] = 0.0
                         msi[msi_clim!=0] = 0.0          # no double registration
                         msi_clim = msi_clim + msi
-                        #plt.pcolor(lon, lat, msi_clim);plt.show()
-                        if c>1:
-                            break
+                        #if c>1:
+                        #    break
                 pkl_file = open(save_file, 'wb')
                 pickle.dump([lon, lat, msi_clim], pkl_file)
                 pkl_file.close()
+
+                # save image
+                plt.pcolormesh(lon, lat, msi_clim)
+                plt.xlabel('lon')
+                plt.ylabel('lat')
+                plt.title('MSI gridded climatology')
+                plt.savefig(save_file.split('.pkl')[0]+'.png', dpi=600)
+
             else:
                 print('Read MSI Climatology file')
                 pkl_file = open(save_file, 'rb')
                 data = pickle.load(pkl_file)
                 lon = data[0]; lat = data[1]; msi_clim = data[2]
                 pkl_file.close()
+            
+            # center points of the gridded msi data
+            lo, la = lon + grid_spacing/2, lat + grid_spacing/2 
+            lo, la = lo.flatten(), la.flatten()
+            points = np.vstack((lo, la)).T
 
             # throw out l1 fill values
             l1_clon[np.abs(l1_clon)>180] = np.nan
@@ -142,52 +163,41 @@ class cloudFilter(object):
             l1_lon[np.abs(l1_lon)>180] = np.nan
             l1_lat[np.abs(l1_lat)>90] = np.nan
             # reshape for pixel generation
-            act, alt = l1_lon.shape[0],l1_lon.shape[1]
             l1_lon = l1_lon.reshape(l1_lon.shape[0]*l1_lon.shape[1])
             l1_lat = l1_lat.reshape(l1_lat.shape[0]*l1_lat.shape[1])
             l1_clon = l1_clon.reshape((l1_clon.shape[0], l1_clon.shape[1]*l1_clon.shape[2]))
             l1_clat = l1_clat.reshape((l1_clat.shape[0], l1_clat.shape[1]*l1_clat.shape[2]))
-            
 
-            pixels = []
+            msi_ref = np.zeros(l1_lon.shape[0])
+            import multiprocessing
+            from joblib import Parallel, delayed
+            st = time.time()
+
             for i in range(l1_lon.shape[0]):
-                c1 = (l1_clon[0,i], l1_clat[0,i])
-                c2 = (l1_clon[1,i], l1_clat[1,i])
-                c3 = (l1_clon[2,i], l1_clat[2,i])
-                c4 = (l1_clon[3,i], l1_clat[3,i])
                 if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
                     continue
                 else:
-                    pixels.append( Polygon([c1, c2, c3, c4, c1]) ) 
-            
+                    c1 = (l1_clon[0,i], l1_clat[0,i])
+                    c2 = (l1_clon[1,i], l1_clat[1,i])
+                    c3 = (l1_clon[2,i], l1_clat[2,i])
+                    c4 = (l1_clon[3,i], l1_clat[3,i])
+                    mask = self.mask_hits(points, c1, c2, c3, c4, lon.shape)
+                    msi_ref[i] = np.nanmean(msi_clim[mask])
 
-            mask = pixels[0].contains(Point(lon[240,15],lat[240,15]))
-            print(mask);sys.exit()
+            print(np.round(time.time()-st, 2))
 
-            f, ax=plt.subplots(1)
-            ax.pcolor(lon, lat, msi_clim)
-            ax.scatter(l1_lon, l1_lat, c=self.l1_sza, s=1)
-            for pix in pixels:
-                patch = PolygonPatch(pix, facecolor='lightgreen', alpha=0.5, zorder=2)
-                ax.add_patch(patch)
+            msi_ref.reshape(lon.shape)
+
+            plt.subplot(211);plt.pcolormesh(lon, lat, msi_clim)
+            plt.subplot(212);plt.pcolormesh(lon, lat, msi_ref)
             plt.show()
-
-            msi_ref = np.zeros(l1_lon.shape)
-            
-            #msi_ref = griddata((lon.ravel(), lat.ravel()), msi_clim.ravel(), (l1_lon, l1_lat))
-            msi_ref[np.isnan(l1_lon.reshape(act, alt))]=np.nan
-            #print(msi_ref)
-            #print(msi_ref.shape)
-                    
-                    
-
+           
         else:
             msi_ref = np.zeros(self.prefilter.shape)
             # TODO implement msi reader for measurement data
 
         return msi_ref
-
-       
+      
     def read_l1(self):
         from netCDF4 import Dataset
         import sys
