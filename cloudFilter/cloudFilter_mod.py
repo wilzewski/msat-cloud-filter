@@ -68,18 +68,29 @@ class cloudFilter(object):
         print('read_msi()')
         self.msi_ref = self.read_msi(l1_lon, l1_lat, l1_clon, l1_clat)
 
-    def mask_hits(self, points, c1, c2, c3, c4, out_shape):
+    def av_msi_per_l1(self, l1_lon, msi_clim, points, c11, c12, c21, c22, c31, c32, c41, c42, out_shape):
         # make mask indicating which points lie within a pixel
         # with corners c1-4; reshape mask give out_shape
         from matplotlib.path import Path
-        p = Path([c1, c2, c3, c4, c1])
-        hits = p.contains_points(points)
-        mask = hits.reshape(out_shape)
-        return mask
+        import numpy as np
+
+        if np.isnan(l1_lon):
+            return 0
+        else:
+            c1 = (c11, c12)
+            c2 = (c21, c22)
+            c3 = (c31, c32)
+            c4 = (c41, c42)
+            p = Path([c1, c2, c3, c4, c1])
+            hits = p.contains_points(points)
+            mask = hits.reshape(out_shape)
+
+            return np.nanmean(msi_clim[mask])
         
     def read_msi(self, l1_lon, l1_lat, l1_clon, l1_clat):
         import numpy as np
         import rasterio
+        from joblib import Parallel, delayed
         import time
         from scipy.interpolate import griddata
         import os
@@ -167,30 +178,41 @@ class cloudFilter(object):
             l1_lat = l1_lat.reshape(l1_lat.shape[0]*l1_lat.shape[1])
             l1_clon = l1_clon.reshape((l1_clon.shape[0], l1_clon.shape[1]*l1_clon.shape[2]))
             l1_clat = l1_clat.reshape((l1_clat.shape[0], l1_clat.shape[1]*l1_clat.shape[2]))
+            print(lon.shape, l1_lon.shape);sys.exit()
 
-            msi_ref = np.zeros(l1_lon.shape[0])
-            import multiprocessing
-            from joblib import Parallel, delayed
             st = time.time()
+            msi_ref = Parallel(n_jobs=6)(\
+                 delayed(self.av_msi_per_l1)\
+                 (l1_lon[i], msi_clim, points, l1_clon[0,i], l1_clat[0,i], l1_clon[1,i], l1_clat[1,i], l1_clon[2,i], l1_clat[2,i], l1_clon[3,i], l1_clat[3,i], lon.shape)\
+                 for i in range(l1_lon.shape[0]))
+                 #for i in np.arange(3000,6500,1))
+            
+            #msi_ref = [np.nanmean(msi_clim[self.mask_hits(points,(l1_clon[0,i], l1_clat[0,i]), (l1_clon[1,i], l1_clat[1,i]), (l1_clon[2,i], l1_clat[2,i]), (l1_clon[3,i], l1_clat[3,i]), lon.shape)]) if np.isnan(l1_lon[i])==False else 0 for i in range(l1_lon.shape[0]) ]
 
-            for i in range(l1_lon.shape[0]):
-                if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
-                    continue
-                else:
-                    c1 = (l1_clon[0,i], l1_clat[0,i])
-                    c2 = (l1_clon[1,i], l1_clat[1,i])
-                    c3 = (l1_clon[2,i], l1_clat[2,i])
-                    c4 = (l1_clon[3,i], l1_clat[3,i])
-                    mask = self.mask_hits(points, c1, c2, c3, c4, lon.shape)
-                    msi_ref[i] = np.nanmean(msi_clim[mask])
+            #for i in range(l1_lon.shape[0]):
+            #    if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
+            #        continue
+            #    else:
+            #        c1 = (l1_clon[0,i], l1_clat[0,i])
+            #        c2 = (l1_clon[1,i], l1_clat[1,i])
+            #        c3 = (l1_clon[2,i], l1_clat[2,i])
+            #        c4 = (l1_clon[3,i], l1_clat[3,i])
+            #        #mask = Parallel(n_jobs=2)(delayed(self.mask_hits)(points, c1, c2, c3, c4, lon.shape))
+            #        mask = self.mask_hits(points, c1, c2, c3, c4, lon.shape)
+            #        msi_ref[i] = np.nanmean(msi_clim[mask])
 
-            print(np.round(time.time()-st, 2))
-
-            msi_ref.reshape(lon.shape)
-
-            plt.subplot(211);plt.pcolormesh(lon, lat, msi_clim)
-            plt.subplot(212);plt.pcolormesh(lon, lat, msi_ref)
-            plt.show()
+            #        print(np.round(time.time()-st, 2));sys.exit()
+            print('Finished after', np.round(time.time()-st, 2), ' sec')
+            #msi_ref=np.array(msi_ref)
+            #msi_ref.reshape(lon.shape)
+            pkl_file = open('msi_ref.pkl', 'wb')
+            pickle.dump([msi_ref], pkl_file)
+            pkl_file.close()
+            #sys.exit()
+            #plt.subplot(211);plt.pcolormesh(lon, lat, msi_clim)
+            #plt.subplot(212);plt.scatter(lon, lat, c=msi_ref)
+            #plt.saveimg('msi_ref.png', dpi=300)
+            #plt.show()
            
         else:
             msi_ref = np.zeros(self.prefilter.shape)
