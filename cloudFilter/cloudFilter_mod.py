@@ -139,7 +139,7 @@ class cloudFilter(object):
                         #c+=1
                         msi_lon, msi_lat = np.meshgrid(np.linspace(min_lon, max_lon, width),\
                                                        np.linspace(min_lat, max_lat, height))
-                        msi = griddata((msi_lon.ravel(), msi_lat.ravel()), img.ravel(), (lon, lat))
+                        msi = griddata((msi_lon.ravel(), msi_lat[::-1].ravel()), img.ravel(), (lon, lat))
                         msi[np.isnan(msi)] = 0.0
                         msi[msi_clim!=0] = 0.0          # no double registration
                         msi_clim = msi_clim + msi
