@@ -1,10 +1,10 @@
 # /bin/csh
 # ----------------Parameters---------------------- #
 #$ -S /bin/csh
-#$ -q lThC.q
+#$ -q uThC.q -l lopri
 #$ -cwd
 #$ -j y
-#$ -N cloud
+#$ -N msi_clim
 #$ -o out.log
 #
 # ----------------Your Commands------------------- #
