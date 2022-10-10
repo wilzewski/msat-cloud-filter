@@ -178,7 +178,6 @@ class cloudFilter(object):
             l1_lat = l1_lat.reshape(l1_lat.shape[0]*l1_lat.shape[1])
             l1_clon = l1_clon.reshape((l1_clon.shape[0], l1_clon.shape[1]*l1_clon.shape[2]))
             l1_clat = l1_clat.reshape((l1_clat.shape[0], l1_clat.shape[1]*l1_clat.shape[2]))
-            print(lon.shape, l1_lon.shape);sys.exit()
 
             st = time.time()
             msi_ref = Parallel(n_jobs=6)(\
