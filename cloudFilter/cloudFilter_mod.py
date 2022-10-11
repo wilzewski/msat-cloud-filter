@@ -30,6 +30,7 @@ class cloudFilter(object):
             # check if level1 is file or directory:
             if os.path.isdir(os.path.abspath(l1)):
                 self.l1_bundle = sorted(glob.glob(l1 + '/*.nc'))
+                self.l1_name = l1.split('.')[1].split('.')[0]
                 if len(self.l1_bundle)==0:
                     print('Provide L1 directory containing netCDF data files')
                     sys.exit()
@@ -37,6 +38,7 @@ class cloudFilter(object):
                 # l1 is one file
                 self.l1_bundle = []
                 self.l1_bundle.append(os.path.abspath(l1))
+                self.l1_name = l1.split('/')[-2]
 
             # Initialize
             filter_shape = (Dataset(self.l1_bundle[0]).dimensions['jmx'].size,
@@ -68,23 +70,128 @@ class cloudFilter(object):
         print('read_msi()')
         self.msi_ref = self.read_msi(l1_lon, l1_lat, l1_clon, l1_clat)
 
-    def av_msi_per_l1(self, l1_lon, msi_clim, points, c11, c12, c21, c22, c31, c32, c41, c42, out_shape):
-        # make mask indicating which points lie within a pixel
-        # with corners c1-4; reshape mask give out_shape
+        # if model not present:
+        print('build_prefilter_model()')
+        self.prefilter_model = self.build_prefilter_model()
+        # else: load model
+
+        #print('apply_prefilter()')
+        #self.prefilter = self.apply_prefilter()
+
+    def build_prefilter_model(self):
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.model_selection import train_test_split
+        from sklearn.neural_network import MLPClassifier
+        from sklearn.metrics import accuracy_score
+        import numpy as np
+
+        X, y = self.prepare_prefilter_data()
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y)
+
+        # feature scaling so variables have mean=0 and std=1
+        scaler = StandardScaler()
+        scaler.fit(X_train)  
+        X_train = scaler.transform(X_train)  
+        # apply same transformation to test data
+        X_test = scaler.transform(X_test)
+
+        clf = MLPClassifier(solver='lbfgs', alpha=1e-5,
+            hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 1 hidden layer
+
+        # Train model
+        clf.fit(X_train, y_train)
+        # Predict
+        pred = clf.predict(X_test)
+        print('Accuracy: ', np.round(accuracy_score(y_test, pred),2))
+
+
+        # save and return model
+        return 0    
+
+    def prepare_prefilter_data(self):
+        import numpy as np
+        import sys
+        import matplotlib.pyplot as plt
+
+        # clean up conditions: high sun, good spectra, no water
+        good_data = np.where((self.l1_sza <= 70) &\
+                             (np.nanmean(self.l1_ref, axis=0) <= 1)&\
+                             (self.msi_ref > 0.001))
+
+        msi = self.msi_ref[good_data]
+        sza = self.l1_sza[good_data]
+        ref = self.l1_ref[:, good_data[0], good_data[1]]
+        cf = self.cloud_truth[good_data]
+
+        if np.where(np.isnan(ref))[0].shape[0] >0:
+            print('bad reflectance input'); sys.exit()
+
+        # spectral sorting order
+        order = self.spectral_sorting(ref, cf)
+        ref = ref[order, :].T
+
+        X = np.stack([sza, msi], axis=1)
+        # append full, sorted reflectance spectra
+        # X = np.hstack((X, ref))
+
+        # alternatively, append average sorted spectra:
+        nchannels = 5
+        r=np.zeros((ref.shape[0],nchannels))
+        l = int(ref.shape[1]/nchannels)
+        for i in range(r.shape[0]):
+            for j in range(r.shape[1]):
+                r[i,j] = np.mean(ref[i,j*l:(j+1)*l])
+        X = np.hstack((X, r))
+
+        # make binary label
+        thresh = 0.9
+        cf[cf>thresh] = 1
+        cf[cf<=thresh] = 0
+
+        return X, cf
+
+    def spectral_sorting(self, ref, cf):
+        # find sorting order
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        ref_0 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]==0.0]), axis=0)
+        order = np.argsort(ref_0)
+        #plt.title('N='+str(ref.shape[1]))
+        #plt.plot(np.linspace(0,1,ref_0.shape[0]), ref_0)
+        #plt.plot(np.linspace(0,1,ref_0.shape[0]), ref_0[order]);plt.show()
+        return order
+
+
+    def av_msi_per_l1(self, l1_lon, msi_clim, points, c11, c12, c21, c22, c31, c32, c41, c42):
+        # make mask indicating which MSI points lie within a l1 pixel
+        # with corners c1-4; reshape mask given out_shape and
+        # average MSI data over the l1 pixels
+        # ARGS:
+        #    l1_lon: longitude of L1 pixel center (float)
+        #    msi_clim: climatology of MSI on some grid (2d array)
+        #    points: center points of gridded MSI data (shape (X,2), with each row containing float(lon), float(lat))
+        #    ci0: corner i longitude (L1)
+        #    ci1: corner i latitude (L1)
         from matplotlib.path import Path
         import numpy as np
 
         if np.isnan(l1_lon):
+            # if l1_lon is nan add 0 reflectance
             return 0
         else:
+            # L1 pixel corner coordinates
             c1 = (c11, c12)
             c2 = (c21, c22)
             c3 = (c31, c32)
             c4 = (c41, c42)
             p = Path([c1, c2, c3, c4, c1])
+            # find MSI pixels within L1 pixel
             hits = p.contains_points(points)
-            mask = hits.reshape(out_shape)
+            mask = hits.reshape(msi_clim.shape)
 
+            # average MSI within pixel
             return np.nanmean(msi_clim[mask])
         
     def read_msi(self, l1_lon, l1_lat, l1_clon, l1_clat):
@@ -103,11 +210,11 @@ class cloudFilter(object):
             # This function collects MSI data on a grid
             # and interpolates an average reflectance to each l1 pixel
 
-            grid_spacing = 0.05    # what is the best choice here?
+            grid_spacing = 0.1    # what is the best choice here?
 
             save_file = 'msi_clim_'+str(grid_spacing).split('.')[0]+'res'+str(grid_spacing).split('.')[1]+'.pkl'
             if save_file not in os.listdir():
-                print('Generating MSI Climatology file')
+                print('Generating MSI Climatology file ', save_file)
 
                 # set up grid on which to collect msi climatology data
                 lon_min, lon_max, lat_min, lat_max = -180.0, 180.0, -90.0, 90.0
@@ -157,60 +264,70 @@ class cloudFilter(object):
                 plt.savefig(save_file.split('.pkl')[0]+'.png', dpi=600)
 
             else:
-                print('Read MSI Climatology file')
+                print('Read MSI Climatology file ', save_file)
                 pkl_file = open(save_file, 'rb')
                 data = pickle.load(pkl_file)
                 lon = data[0]; lat = data[1]; msi_clim = data[2]
                 pkl_file.close()
-            
-            # center points of the gridded msi data
-            lo, la = lon + grid_spacing/2, lat + grid_spacing/2 
-            lo, la = lo.flatten(), la.flatten()
-            points = np.vstack((lo, la)).T
 
-            # throw out l1 fill values
-            l1_clon[np.abs(l1_clon)>180] = np.nan
-            l1_clat[np.abs(l1_clat)>90] = np.nan
-            l1_lon[np.abs(l1_lon)>180] = np.nan
-            l1_lat[np.abs(l1_lat)>90] = np.nan
-            # reshape for pixel generation
-            l1_lon = l1_lon.reshape(l1_lon.shape[0]*l1_lon.shape[1])
-            l1_lat = l1_lat.reshape(l1_lat.shape[0]*l1_lat.shape[1])
-            l1_clon = l1_clon.reshape((l1_clon.shape[0], l1_clon.shape[1]*l1_clon.shape[2]))
-            l1_clat = l1_clat.reshape((l1_clat.shape[0], l1_clat.shape[1]*l1_clat.shape[2]))
+            msi_ref_file = self.l1_name+'_msi_ref.pkl'
+            if msi_ref_file not in os.listdir():
+                print('Colocate L1 and MSI')
+                
+                # center points of the gridded msi data
+                lo, la = lon + grid_spacing/2, lat + grid_spacing/2 
+                lo, la = lo.flatten(), la.flatten()
+                points = np.vstack((lo, la)).T
 
-            st = time.time()
-            msi_ref = Parallel(n_jobs=6)(\
-                 delayed(self.av_msi_per_l1)\
-                 (l1_lon[i], msi_clim, points, l1_clon[0,i], l1_clat[0,i], l1_clon[1,i], l1_clat[1,i], l1_clon[2,i], l1_clat[2,i], l1_clon[3,i], l1_clat[3,i], lon.shape)\
-                 for i in range(l1_lon.shape[0]))
-                 #for i in np.arange(3000,6500,1))
-            
-            #msi_ref = [np.nanmean(msi_clim[self.mask_hits(points,(l1_clon[0,i], l1_clat[0,i]), (l1_clon[1,i], l1_clat[1,i]), (l1_clon[2,i], l1_clat[2,i]), (l1_clon[3,i], l1_clat[3,i]), lon.shape)]) if np.isnan(l1_lon[i])==False else 0 for i in range(l1_lon.shape[0]) ]
+                # throw out l1 fill values
+                l1_clon[np.abs(l1_clon)>180] = np.nan
+                l1_clat[np.abs(l1_clat)>90] = np.nan
+                l1_lon[np.abs(l1_lon)>180] = np.nan
+                l1_lat[np.abs(l1_lat)>90] = np.nan
+                # reshape for pixel generation
+                l1alt, l1act = l1_lon.shape[0],l1_lon.shape[1]
+                l1_lon = l1_lon.reshape(l1_lon.shape[0]*l1_lon.shape[1])
+                l1_lat = l1_lat.reshape(l1_lat.shape[0]*l1_lat.shape[1])
+                l1_clon = l1_clon.reshape((l1_clon.shape[0], l1_clon.shape[1]*l1_clon.shape[2]))
+                l1_clat = l1_clat.reshape((l1_clat.shape[0], l1_clat.shape[1]*l1_clat.shape[2]))
 
-            #for i in range(l1_lon.shape[0]):
-            #    if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
-            #        continue
-            #    else:
-            #        c1 = (l1_clon[0,i], l1_clat[0,i])
-            #        c2 = (l1_clon[1,i], l1_clat[1,i])
-            #        c3 = (l1_clon[2,i], l1_clat[2,i])
-            #        c4 = (l1_clon[3,i], l1_clat[3,i])
-            #        #mask = Parallel(n_jobs=2)(delayed(self.mask_hits)(points, c1, c2, c3, c4, lon.shape))
-            #        mask = self.mask_hits(points, c1, c2, c3, c4, lon.shape)
-            #        msi_ref[i] = np.nanmean(msi_clim[mask])
+                st = time.time()
+                msi_ref = Parallel(n_jobs=6)(\
+                     delayed(self.av_msi_per_l1)\
+                     (l1_lon[i], msi_clim, points, l1_clon[0,i], l1_clat[0,i], l1_clon[1,i], l1_clat[1,i], l1_clon[2,i], l1_clat[2,i], l1_clon[3,i], l1_clat[3,i])\
+                     for i in range(l1_lon.shape[0]))
+                msi_ref = np.array(msi_ref).reshape(l1alt, l1act)
+                
+                #for i in range(l1_lon.shape[0]):
+                #    if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
+                #        continue
+                #    else:
+                #        c1 = (l1_clon[0,i], l1_clat[0,i])
+                #        c2 = (l1_clon[1,i], l1_clat[1,i])
+                #        c3 = (l1_clon[2,i], l1_clat[2,i])
+                #        c4 = (l1_clon[3,i], l1_clat[3,i])
+                #        #mask = Parallel(n_jobs=2)(delayed(self.mask_hits)(points, c1, c2, c3, c4, lon.shape))
+                #        mask = self.mask_hits(points, c1, c2, c3, c4, lon.shape)
+                #        msi_ref[i] = np.nanmean(msi_clim[mask])
+                #msi_ref=np.array(msi_ref)
+                #msi_ref.reshape(lon.shape)
 
-            #        print(np.round(time.time()-st, 2));sys.exit()
-            print('Finished after', np.round(time.time()-st, 2), ' sec')
-            #msi_ref=np.array(msi_ref)
-            #msi_ref.reshape(lon.shape)
-            pkl_file = open('msi_ref.pkl', 'wb')
-            pickle.dump([msi_ref], pkl_file)
-            pkl_file.close()
-            #sys.exit()
-            #plt.subplot(211);plt.pcolormesh(lon, lat, msi_clim)
-            #plt.subplot(212);plt.scatter(lon, lat, c=msi_ref)
-            #plt.saveimg('msi_ref.png', dpi=300)
+                print('Finished after', np.round(time.time()-st, 2), ' sec')
+                pkl_file = open(msi_ref_file, 'wb')
+                pickle.dump([msi_ref], pkl_file)
+                pkl_file.close()
+            else:
+                print('Read colocated MSI reflectance from ', msi_ref_file)
+                pkl_file = open(msi_ref_file, 'rb')
+                data = pickle.load(pkl_file)
+                #msi_ref = data[0]
+                msi_ref = np.array(data[0]).reshape(l1_lon.shape[0],l1_lon.shape[1])
+                pkl_file.close()
+
+            #plt.pcolormesh(lon, lat, msi_clim, vmin=0, vmax=1)
+            #plt.scatter(l1_lon, l1_lat, c=np.array(msi_ref).reshape(l1_lon.shape[0],l1_lon.shape[1]), vmin=0, vmax=1)
+            #plt.ylim(-90,90);plt.xlim(-180,180)
+            #plt.savefig(msi_ref_file.split('.pkl')[0]+'.png', dpi=300)
             #plt.show()
            
         else:
