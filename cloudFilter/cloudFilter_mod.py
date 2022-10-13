@@ -24,59 +24,86 @@ class cloudFilter(object):
         '''
 
         if osse:
-            self.data_type=0
+            self.data_type = 0
             # if OSSE always use geos-fp profile data as truth:
             self.truth_path = '/scratch/sao_atmos/ahsouri/Retrieval/methanesat_osses/profile_prep/geos-fp-profile/airglow_extended/'
-            # check if level1 is file or directory:
-            if os.path.isdir(os.path.abspath(l1)):
-                self.l1_bundle = sorted(glob.glob(l1 + '/*.nc'))
-                self.l1_name = l1.split('.')[1].split('.')[0]
-                if len(self.l1_bundle)==0:
-                    print('Provide L1 directory containing netCDF data files')
-                    sys.exit()
-            else:
-                # l1 is one file
-                self.l1_bundle = []
-                self.l1_bundle.append(os.path.abspath(l1))
-                self.l1_name = l1.split('/')[-2]
-
-            # Initialize
-            filter_shape = (Dataset(self.l1_bundle[0]).dimensions['jmx'].size,
-                             Dataset(self.l1_bundle[0]).dimensions['imx'].size)
-            self.prefilter = np.zeros(filter_shape)
-            self.quality_flag = np.zeros(filter_shape)
-            self.postfilter = np.zeros(filter_shape)
-            self.l1_ref = np.zeros(filter_shape)
-            self.l1_sza = np.zeros(filter_shape)
-            self.l1_alb = np.zeros(filter_shape)
-            self.msi_ref = np.zeros(filter_shape)
-            self.cloud_truth = np.zeros(filter_shape)
-            self.msi_path = msi
-            
         else:
             # MSAT/MAIR data
             self.data_type = 1
-            # TODO fill in initialization for MAIR data
-            
+
+        # check if level1 is file or directory:
+        if os.path.isdir(os.path.abspath(l1)):
+            self.l1_bundle = sorted(glob.glob(l1 + '/*.nc'))
+            self.l1_name = l1.split('.')[1].split('.')[0]
+            if len(self.l1_bundle)==0:
+                print('Provide L1 directory containing netCDF data files')
+                sys.exit()
+        else:
+            # l1 is one file
+            self.l1_bundle = []
+            self.l1_bundle.append(os.path.abspath(l1))
+            self.l1_name = l1.split('/')[-2]
+
+        # Initialize
+        if osse:
+            filter_shape = (Dataset(self.l1_bundle[0]).dimensions['jmx'].size,
+                         Dataset(self.l1_bundle[0]).dimensions['imx'].size)
+            self.cloud_truth = np.zeros(filter_shape)
+        else:
+            filter_shape = (Dataset(self.l1_bundle[0]).dimensions['x'].size,
+                         Dataset(self.l1_bundle[0]).dimensions['y'].size)
+
+        self.prefilter = np.zeros(filter_shape)
+        self.quality_flag = np.zeros(filter_shape)
+        self.postfilter = np.zeros(filter_shape)
+        self.l1_ref = np.zeros(filter_shape)
+        self.l1_sza = np.zeros(filter_shape)
+        self.l1_alb = np.zeros(filter_shape)
+        self.msi_ref = np.zeros(filter_shape)
+        self.msi_path = msi
+        self.prefilter_model = 0
+
+    def apply_prefilter(self):
+
+        print('read_l1()')
+        self.l1_sza, self.l1_ref, l1_lon, l1_lat = self.read_l1()
+
+        return self.prefilter
+
+
     def get_prefilter(self):
         import matplotlib.pyplot as plt
         import numpy as np
         import sys
+        import os
+        import pickle
 
-        print('read_l1()')
-        self.l1_sza, self.l1_alb, self.l1_ref, \
-             self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = self.read_l1()
+        if self.data_type==0:
+            print('read_l1()')
+            self.l1_sza, self.l1_alb, self.l1_ref, \
+                 self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = self.read_l1()
 
-        print('read_msi()')
-        self.msi_ref = self.read_msi(l1_lon, l1_lat, l1_clon, l1_clat)
+            print('read_msi()')
+            self.msi_ref = self.read_msi(l1_lon, l1_lat, l1_clon, l1_clat)
 
-        # if model not present:
-        print('build_prefilter_model()')
-        self.prefilter_model = self.build_prefilter_model()
-        # else: load model
-
-        #print('apply_prefilter()')
-        #self.prefilter = self.apply_prefilter()
+            # if model not present:
+            if 'prefilter_model.pkl' not in os.listdir():
+                print('build_prefilter_model()')
+                self.prefilter_model = self.build_prefilter_model()
+            else:
+                print('Read prefilter model from prefilter_model.pkl')
+                pkl_file = open('prefilter_model.pkl', 'rb')
+                self.prefilter_model = pickle.load(pkl_file)
+                pkl_file.close()
+        else:
+            if 'prefilter_model.pkl' not in os.listdir():
+                print('Prefilter model not found. Create first (run code on OSSE).')
+                sys.exit()
+            else:
+                print('Read prefilter model from prefilter_model.pkl')
+                pkl_file = open('prefilter_model.pkl', 'rb')
+                self.prefilter_model = pickle.load(pkl_file)
+                pkl_file.close()
 
     def build_prefilter_model(self):
         from sklearn.preprocessing import StandardScaler
@@ -84,6 +111,7 @@ class cloudFilter(object):
         from sklearn.neural_network import MLPClassifier
         from sklearn.metrics import accuracy_score
         import numpy as np
+        import pickle
 
         X, y = self.prepare_prefilter_data()
 
@@ -96,18 +124,23 @@ class cloudFilter(object):
         # apply same transformation to test data
         X_test = scaler.transform(X_test)
 
-        clf = MLPClassifier(solver='lbfgs', alpha=1e-5,
+        model = MLPClassifier(solver='lbfgs', max_iter=600, alpha=1e-5,
             hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 1 hidden layer
 
         # Train model
-        clf.fit(X_train, y_train)
+        model.fit(X_train, y_train)
         # Predict
-        pred = clf.predict(X_test)
+        pred = model.predict(X_test)
         print('Accuracy: ', np.round(accuracy_score(y_test, pred),2))
 
+        # save model
+        save_file = 'prefilter_model.pkl'
+        print('Saving prefilter model to ', save_file)
+        pkl_file = open(save_file, 'wb')
+        pickle.dump(model, pkl_file)
+        pkl_file.close()
 
-        # save and return model
-        return 0    
+        return model
 
     def prepare_prefilter_data(self):
         import numpy as np
@@ -163,7 +196,6 @@ class cloudFilter(object):
         #plt.plot(np.linspace(0,1,ref_0.shape[0]), ref_0[order]);plt.show()
         return order
 
-
     def av_msi_per_l1(self, l1_lon, msi_clim, points, c11, c12, c21, c22, c31, c32, c41, c42):
         # make mask indicating which MSI points lie within a l1 pixel
         # with corners c1-4; reshape mask given out_shape and
@@ -193,7 +225,7 @@ class cloudFilter(object):
 
             # average MSI within pixel
             return np.nanmean(msi_clim[mask])
-        
+
     def read_msi(self, l1_lon, l1_lat, l1_clon, l1_clat):
         import numpy as np
         import rasterio
@@ -210,7 +242,7 @@ class cloudFilter(object):
             # This function collects MSI data on a grid
             # and interpolates an average reflectance to each l1 pixel
 
-            grid_spacing = 0.1    # what is the best choice here?
+            grid_spacing = 0.05    # what is the best choice here?
 
             save_file = 'msi_clim_'+str(grid_spacing).split('.')[0]+'res'+str(grid_spacing).split('.')[1]+'.pkl'
             if save_file not in os.listdir():
@@ -221,7 +253,7 @@ class cloudFilter(object):
                 lon = np.arange(lon_min, lon_max, grid_spacing)
                 lat = np.arange(lat_min, lat_max, grid_spacing)
                 lon,lat = np.meshgrid(lon, lat)
-                
+
                 msi_clim = np.zeros(lon.shape)
                 #c=0
                 for f in sorted(os.listdir(self.msi_path)):
@@ -273,7 +305,7 @@ class cloudFilter(object):
             msi_ref_file = self.l1_name+'_msi_ref.pkl'
             if msi_ref_file not in os.listdir():
                 print('Colocate L1 and MSI')
-                
+
                 # center points of the gridded msi data
                 lo, la = lon + grid_spacing/2, lat + grid_spacing/2 
                 lo, la = lo.flatten(), la.flatten()
@@ -297,7 +329,7 @@ class cloudFilter(object):
                      (l1_lon[i], msi_clim, points, l1_clon[0,i], l1_clat[0,i], l1_clon[1,i], l1_clat[1,i], l1_clon[2,i], l1_clat[2,i], l1_clon[3,i], l1_clat[3,i])\
                      for i in range(l1_lon.shape[0]))
                 msi_ref = np.array(msi_ref).reshape(l1alt, l1act)
-                
+
                 #for i in range(l1_lon.shape[0]):
                 #    if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
                 #        continue
@@ -329,7 +361,7 @@ class cloudFilter(object):
             #plt.ylim(-90,90);plt.xlim(-180,180)
             #plt.savefig(msi_ref_file.split('.pkl')[0]+'.png', dpi=300)
             #plt.show()
-           
+
         else:
             msi_ref = np.zeros(self.prefilter.shape)
             # TODO implement msi reader for measurement data
@@ -340,6 +372,8 @@ class cloudFilter(object):
         from netCDF4 import Dataset
         import sys
         import numpy as np
+        import ephem
+        import datetime
 
         sza, alb, lon, lat, xch4_true, cf, l1_ref, clon, clat = [],[],[],[],[],[],[],[],[]
 
@@ -395,7 +429,68 @@ class cloudFilter(object):
                      np.array(cf).T, np.array(lon).T, np.array(lat).T,\
                      np.array(clon).T, np.array(clat).T #, np.array(xch4_true).T
 
-        #else:   TODO write MAIR L1 reader
+        else:
+            for f in self.l1_bundle:
+                d = Dataset(f)
+               
+                if len(d.groups) < 3:  # this is an intermediate/pre-L1B file
+                    # time and date not in file, get it from file name
+                    date = f.split('_')[6].split('T')[0]
+                    time = f.split('_')[6].split('T')[1]
+                    y = int(date[:4])
+                    mo = int(date[4:6])
+                    da = int(date[6:8])
+                    h = int(time[:2])
+                    mi = int(time[2:4])
+                    s = int(time[4:6])
+                    t = datetime.datetime(y, mo, da, h, mi, s)
+ 
+                    lon_tmp = np.array(d.groups['Geolocation'].variables['Longitude'][:])
+                    lon.append(lon_tmp)
+                    lat_tmp = np.array(d.groups['Geolocation'].variables['Latitude'][:])
+                    lat.append(lat_tmp)
+
+                    # use a single SZA value for entire L1 scene
+                    sza_tmp = np.ones(lon_tmp.shape)
+                    obs = ephem.Observer()
+                    obs.lat = str(np.mean(lat))
+                    obs.lon = str(np.mean(lon))
+                    obs.date = t
+                    sun = ephem.Sun(obs)
+                    sun.compute(obs)
+                    sza_tmp = sza_tmp * (90. - float(sun.alt) * 180. / np.pi)
+
+                    # if pixel-by-pixel SZA desired, use this:
+                    # (takes ~3 sec for 30 sec granule vs ~3 msec for approximation above)
+                    #sza_tmp = np.zeros(lon_tmp.shape)
+                    #for i in range(sza_tmp.shape[0]):
+                    #    for j in range(sza_tmp.shape[1]):
+                    #        obs = ephem.Observer()
+                    #        obs.lat = str(lat[-1,-1])
+                    #        obs.lon = str(lon[-1,-1])
+                    #        obs.date = t
+                    #        sun = ephem.Sun(obs)
+                    #        sun.compute(obs)
+                    #        sza_tmp[i,j] = 90. - float(sun.alt) * 180. / np.pi
+
+                    sza.append(sza)
+                    rad = np.array(d.groups['Band1'].variables['Radiance'][:])
+
+                    # calculate reflectance spectra
+                    I0_CH4 = 1.963e14  # approx I0 @ 1621 nm [photons/s/cm2/nm] 
+                                       # (from chance_jpl_mrg_hitran_200-16665nm.nc)
+                    l1_ref.append( np.pi * rad\
+                                   / (np.cos(np.pi * sza_tmp / 180.) * I0_CH4))
+
+                    print(l1_ref)
+                    print(np.array(l1_ref).shape)
+                    
+                    return np.array(sza), np.array(l1_ref), np.array(lon), np.array(lat)
+
+                #else:  this is a L1B file
+                # TODO add reader
+
+           
             
 
     def get_cloud_fraction(self, osse_path, l1_file, ix0, ixf):
