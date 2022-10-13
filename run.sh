@@ -8,5 +8,5 @@
 #$ -o out.log
 #
 # ----------------Your Commands------------------- #
-python test_osse.py
-
+#python test_osse.py
+python test_l1a.py
