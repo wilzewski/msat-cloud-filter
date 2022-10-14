@@ -60,16 +60,219 @@ class cloudFilter(object):
         self.l1_sza = np.zeros(filter_shape)
         self.l1_alb = np.zeros(filter_shape)
         self.msi_ref = np.zeros(filter_shape)
+        self.msi_raw = np.zeros(filter_shape)
         self.msi_path = msi
         self.prefilter_model = 0
+        self.yymmdd = 20220101
 
     def apply_prefilter(self):
+        import numpy as np
+        import matplotlib.pyplot as plt
+        from sklearn.preprocessing import StandardScaler
 
         print('read_l1()')
         self.l1_sza, self.l1_ref, l1_lon, l1_lat = self.read_l1()
 
+        import pickle
+        import os
+        if 'tmp.pkl' not in os.listdir():
+            print('read_msi_B11()')
+            self.msi_ref = self.read_msi_B11(l1_lon, l1_lat)
+
+            pkl_file = open('tmp.pkl', 'wb')
+            pickle.dump(self.msi_ref, pkl_file)
+            pkl_file.close()
+        else:
+            print('read msi_ref from file')
+            pkl_file = open('tmp.pkl', 'rb')
+            self.msi_ref = pickle.load(pkl_file)
+            pkl_file.close()
+
+        f, (ax1, ax2) = plt.subplots(2,1)
+        ax1.pcolor(l1_lon[0], l1_lat[0], self.l1_ref[0][630,:,:])
+        ax2.pcolor(l1_lon[0], l1_lat[0], self.msi_ref[0])
+        plt.show()
+        
+        X = self.prepare_prefilter_data()
+        scaler = StandardScaler()
+        scaler.fit(X)
+        X = scaler.transform(X)
+
+        pred = self.prefilter_model.predict(X)
+        print(pred)
+        print(pred.shape)
+
         return self.prefilter
 
+    def read_msi_B11(self, l1_lon, l1_lat):
+        # read MSI jp2 files
+        import numpy as np
+        import os
+        import rasterio
+        import utm
+        import cv2
+        from shapely.geometry import Polygon
+        import sys
+        import matplotlib.pyplot as plt
+        import time
+        
+        intersect_box = []
+        msi_date_intsec = []
+
+        # loop through MSI files:
+        for f in sorted(os.listdir(self.msi_path)):
+            if 'T12TVK' not in f:
+                continue
+
+            file_size = os.path.getsize(self.msi_path+'/'+f)
+            # read MSI information
+            src = rasterio.open(self.msi_path+'/'+f,driver='JP2OpenJPEG')
+            # UTM zones
+            zones = (int(str(src.crs)[-2::]))
+            out_trans = src.transform
+            # get the boundaries
+            width = src.width
+            height = src.height
+
+            temp =  out_trans * (0,0)
+            corner1 = np.array(utm.to_latlon(temp[0],temp[1],int(zones),'T'))
+            temp =  out_trans * (height,width)
+            corner4 = np.array(utm.to_latlon(temp[0],temp[1],int(zones),'T') )
+
+            # make polygons for both l1 and msi images based on their corners
+            p_msi = Polygon([(corner1[1],corner4[0]), (corner4[1],corner4[0]), (corner4[1],corner1[0]),                              (corner1[1],corner1[0]), (corner1[1],corner4[0])])
+
+            if l1_lon.shape[0]==1: # L1 is a single file
+                p_l1 = Polygon([(np.min(l1_lon), np.min(l1_lat)), 
+                                  (np.max(l1_lon), np.min(l1_lat)), (np.max(l1_lon), np.max(l1_lat)), 
+                                  (np.min(l1_lon), np.max(l1_lat)), (np.min(l1_lon), np.min(l1_lat))])
+
+            else:   # TODO add for L1 list/dir
+                print('l1 data are list/from directory - add code here');sys.exit()
+
+            if (p_msi.intersects(p_l1)) and file_size>15096676:
+                intersect_box.append(self.msi_path+'/'+f)
+                msi_date_intsec.append(float(f.split('_')[-2].split('T')[0]))
+
+        if (not intersect_box):
+            print('No MSI files being relevant to the targeted location/time were found, please fetch more MSI data')
+            return np.zeros(self.prefilter.shape)
+            # TODO add an option to read from MSI climatology here
+
+        else:    # MSI images overlapping the L1 field were found
+            # which MSI image is temporaly closest to L1?
+            dist_date = np.abs(np.array(msi_date_intsec) - float(self.yyyymmdd))
+            dist_date_sorted = sorted(dist_date)
+            counter = 0
+            # finding the most relevant MSI images based on date
+            index_chosen_sorted = []
+            for i in range(np.size(dist_date_sorted)):
+                j = np.where(dist_date == dist_date_sorted[i])[0]
+                for p in range(np.size(j)):
+                    if counter>10:
+                        break
+                    index_chosen_sorted.append(j[p])
+                    counter = counter + 1
+
+            msi_grays = []
+            lat_msis = []
+            lon_msis = []
+            # loop over selected MSI images
+            for index_bundle in range(len(index_chosen_sorted)):
+                # read MSI
+                src = rasterio.open(intersect_box[index_chosen_sorted[index_bundle]],driver='JP2OpenJPEG')
+                # UTM zone
+                zones = (int(str(src.crs)[-2::]))
+                # the transformation from i,j to E and N
+                out_trans = src.transform
+                msi_img = src.read(1) # grayscale image
+                print('Reading MSI image ' +  intersect_box[index_chosen_sorted[index_bundle]])
+              
+                # i,j to E and N
+                E_msi = np.zeros_like(msi_img)*np.nan
+                N_msi = np.zeros_like(msi_img)*np.nan
+                t0 = time.time()
+                for i in range(np.shape(E_msi)[0]):
+                    for j in range(np.shape(E_msi)[1]):
+                        temp = out_trans * (i,j)
+                        E_msi[i,j] = temp[0] 
+                        N_msi[i,j] = temp[1]
+                print('Finished loop in ', np.round(time.time()-t0,2), ' sec')
+
+                E_msi = np.float32(E_msi)
+                N_msi = np.float32(N_msi)
+                
+                # E and N to lon and lat
+                temp = np.array(utm.to_latlon(E_msi.flatten(),N_msi.flatten(),int(zones),'T'))
+                temp2 = np.reshape(temp,(2,np.shape(msi_img)[0],np.shape(msi_img)[1]))
+
+                lat_msi = np.squeeze(temp2[0,:,:])
+                lon_msi = np.squeeze(temp2[1,:,:])
+
+                msi_gray = np.array(msi_img, dtype='uint16').astype('float32')
+
+                msi_grays.append(np.transpose(msi_gray))
+                lat_msis.append(lat_msi)
+                lon_msis.append(lon_msi)
+
+        print('Interpolating MSI images onto L1 grid')
+        for msi_ind in range(len(msi_grays)): # looping over selected MSI images
+            r = self.cutter(msi_grays[msi_ind],lat_msis[msi_ind],lon_msis[msi_ind], l1_lon, l1_lat)
+            if msi_ind == 0:
+                final_msi = np.zeros_like(r)
+            r[final_msi != 0.0] = 0.0
+            final_msi = final_msi + r
+
+        # a scaling factor should be applied to make ref physical
+        self.msi_raw = final_msi/10000.0
+        r = final_msi
+
+        # normalizing between 0 and 1 based on min/max
+        msi_ref = cv2.normalize(r,np.zeros(r.shape, np.double),0.0,1.0,cv2.NORM_MINMAX)
+        # histogram equalization for enhancing image contrast
+        #clahe = cv2.createCLAHE(clipLimit = 2.0, tileGridSize=(8,8))
+        #self.master = clahe.apply(np.uint8(msi_ref*255))
+        # uncomment this to run without contrast enhancement
+        msi_ref = np.uint8(msi_ref*255)
+
+        return msi_ref
+
+    def cutter(self,rad,lat,lon, l1_lon, l1_lat):
+        '''
+        subset the large msi/landsat data based on min/max lons/lats
+        ARGS:
+           rad(float) : radiance
+           lat(float) : latitude
+           lon(float) : longitude
+        OUT:
+           rad(float) : radiance
+        ''' 
+        import numpy as np
+        from scipy.interpolate import griddata 
+
+        # find the range in lon and lat of the slave image
+        lon_range = np.array([np.min(l1_lon),np.max(l1_lon)])
+        lat_range = np.array([np.min(l1_lat),np.max(l1_lat)])
+        # create a mask
+        mask_lon = (lon >= lon_range[0]) & (lon <= lon_range[1])
+        mask_lat = (lat >= lat_range[0]) & (lat <= lat_range[1])
+        # mask it, f**king, mask it
+        rad = rad [ mask_lon & mask_lat ]
+        lat = lat [ mask_lon & mask_lat ]
+        lon = lon [ mask_lon & mask_lat ]
+        
+        # regrid the master into the slave lats/lons
+        points = np.zeros((np.size(lat),2))
+        points[:,0] = lon.flatten()
+        points[:,1] = lat.flatten()
+        rad = griddata(points, rad.flatten(), (l1_lon, l1_lat), method='linear')
+        
+        # masking based on bad data in the slave
+        #if self.typesat_master == 0: # no need to mask for O2-CH4 relative correction
+        #   pass
+        #else:
+        #   rad[self.maskslave] = np.nan
+        return rad
 
     def get_prefilter(self):
         import matplotlib.pyplot as plt
@@ -83,8 +286,8 @@ class cloudFilter(object):
             self.l1_sza, self.l1_alb, self.l1_ref, \
                  self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = self.read_l1()
 
-            print('read_msi()')
-            self.msi_ref = self.read_msi(l1_lon, l1_lat, l1_clon, l1_clat)
+            print('read_msi_clim()')
+            self.msi_ref = self.read_msi_clim(l1_lon, l1_lat, l1_clon, l1_clat)
 
             # if model not present:
             if 'prefilter_model.pkl' not in os.listdir():
@@ -143,27 +346,50 @@ class cloudFilter(object):
         return model
 
     def prepare_prefilter_data(self):
+        import pickle
         import numpy as np
         import sys
         import matplotlib.pyplot as plt
+        import os
+        
+        # when running on the MAIR data, l1 fields need to be squeezed
+        # to remove leading "1"/nfiles dimension, should do this differently!!!
+        self.l1_sza = self.l1_sza.squeeze()
+        self.l1_ref = self.l1_ref.squeeze()
+        self.msi_ref = self.msi_ref.squeeze()
 
         # clean up conditions: high sun, good spectra, no water
         good_data = np.where((self.l1_sza <= 70) &\
                              (np.nanmean(self.l1_ref, axis=0) <= 1)&\
-                             (self.msi_ref > 0.001))
+                             (self.msi_ref > 0.001))   # TODO keep water?
 
         msi = self.msi_ref[good_data]
         sza = self.l1_sza[good_data]
         ref = self.l1_ref[:, good_data[0], good_data[1]]
-        cf = self.cloud_truth[good_data]
+        if self.data_type==0:   # OSSE data run
+            cf = self.cloud_truth[good_data]
 
-        if np.where(np.isnan(ref))[0].shape[0] >0:
+        if np.where(np.isnan(ref))[0].shape[0] > 0:
             print('bad reflectance input'); sys.exit()
 
         # spectral sorting order
-        order = self.spectral_sorting(ref, cf)
-        ref = ref[order, :].T
+        sorting_order_file = 'sorting_order.pkl'
+        if sorting_order_file not in os.listdir():
+            if self.data_type == 0:
+                order = self.spectral_sorting(ref, cf)
+            else:
+                print('sorting order save file missing, derive it first by running on OSSE data.');sys.exit()
+            print('Saving sorting order to ', sorting_order_file)
+            pkl_file = open(sorting_order_file, 'wb')
+            pickle.dump(order, pkl_file)
+            pkl_file.close()
+        else:
+            print('Reading sorting order from ', sorting_order_file)
+            pkl_file = open(sorting_order_file, 'rb')
+            order = pickle.load(pkl_file)
+            pkl_file.close()
 
+        ref = ref[order, :].T
         X = np.stack([sza, msi], axis=1)
         # append full, sorted reflectance spectra
         # X = np.hstack((X, ref))
@@ -177,14 +403,18 @@ class cloudFilter(object):
                 r[i,j] = np.mean(ref[i,j*l:(j+1)*l])
         X = np.hstack((X, r))
 
-        # make binary label
-        thresh = 0.9
-        cf[cf>thresh] = 1
-        cf[cf<=thresh] = 0
+        if self.data_type == 0:
+            # make binary label
+            thresh = 0.9
+            cf[cf>thresh] = 1
+            cf[cf<=thresh] = 0
 
-        return X, cf
+            return X, cf
+        else:
+            return X
 
     def spectral_sorting(self, ref, cf):
+        # approach inspired by https://doi.org/10.1029/2018GL079286
         # find sorting order
         import numpy as np
         import matplotlib.pyplot as plt
@@ -226,7 +456,7 @@ class cloudFilter(object):
             # average MSI within pixel
             return np.nanmean(msi_clim[mask])
 
-    def read_msi(self, l1_lon, l1_lat, l1_clon, l1_clat):
+    def read_msi_clim(self, l1_lon, l1_lat, l1_clon, l1_clat):
         import numpy as np
         import rasterio
         from joblib import Parallel, delayed
@@ -375,11 +605,12 @@ class cloudFilter(object):
         import ephem
         import datetime
 
-        sza, alb, lon, lat, xch4_true, cf, l1_ref, clon, clat = [],[],[],[],[],[],[],[],[]
+        sza, alb, lon, lat, xch4_true, cf, l1_ref, clon, clat, yyyymmdd = [],[],[],[],[],[],[],[],[],[]
 
         if self.data_type==0:
             for f in self.l1_bundle:
                 d = Dataset(f)
+                yyyymmdd.append(np.float(f.split('.')[0].split('_')[-1]))
                 ff = f.split('/')[-1].split('_')
                 ix0 = int(ff[1])-1
                 ixf = int(ff[2])
@@ -425,6 +656,7 @@ class cloudFilter(object):
 
                 cf.append(self.get_cloud_fraction(self.truth_path, f, ix0, ixf))
 
+            self.yyyymmdd = np.median(yyyymmdd)
             return np.array(sza).T, np.array(alb).T, np.array(l1_ref).T,\
                      np.array(cf).T, np.array(lon).T, np.array(lat).T,\
                      np.array(clon).T, np.array(clat).T #, np.array(xch4_true).T
@@ -444,6 +676,7 @@ class cloudFilter(object):
                     mi = int(time[2:4])
                     s = int(time[4:6])
                     t = datetime.datetime(y, mo, da, h, mi, s)
+                    yyyymmdd.append(np.float(date[:4]+date[4:6]+date[6:8]))
  
                     lon_tmp = np.array(d.groups['Geolocation'].variables['Longitude'][:])
                     lon.append(lon_tmp)
@@ -473,7 +706,7 @@ class cloudFilter(object):
                     #        sun.compute(obs)
                     #        sza_tmp[i,j] = 90. - float(sun.alt) * 180. / np.pi
 
-                    sza.append(sza)
+                    sza.append(sza_tmp)
                     rad = np.array(d.groups['Band1'].variables['Radiance'][:])
 
                     # calculate reflectance spectra
@@ -482,16 +715,11 @@ class cloudFilter(object):
                     l1_ref.append( np.pi * rad\
                                    / (np.cos(np.pi * sza_tmp / 180.) * I0_CH4))
 
-                    print(l1_ref)
-                    print(np.array(l1_ref).shape)
-                    
-                    return np.array(sza), np.array(l1_ref), np.array(lon), np.array(lat)
-
                 #else:  this is a L1B file
                 # TODO add reader
 
-           
-            
+            self.yyyymmdd = np.median(yyyymmdd)
+            return np.array(sza), np.array(l1_ref), np.array(lon), np.array(lat)
 
     def get_cloud_fraction(self, osse_path, l1_file, ix0, ixf):
         import os
