@@ -101,13 +101,15 @@ class cloudFilter(object):
         X = scaler.transform(X)
 
         pred = self.prefilter_model.predict(X)
-        print(pred)
-        print(pred.shape)
 
         tmp = np.zeros(self.prefilter.shape)
-        tmp[self.l1_ref_non_nan] = pred
+        tmp[self.l1_valid_mask] = pred
         
         self.prefilter = tmp
+        
+        #plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
+        #plt.imshow(self.prefilter, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
+        #plt.show()
 
         return self.prefilter
 
@@ -376,32 +378,46 @@ class cloudFilter(object):
 
         msi = self.msi_ref[good_data]
         sza = self.l1_sza[good_data]
-        ref = self.l1_ref[:, good_data[0], good_data[1]]
-        #plt.plot(np.linspace(0,1,len(ref[:,0])), ref[:,0]);plt.show()
+        if self.data_type == 0:
+            ref = self.l1_ref[:, good_data[0], good_data[1]]
+        else:
+            # MAIR: cut off wavelengths since qeff deteriorates after index ~700
+            ref = self.l1_ref[:700, good_data[0], good_data[1]]
+
+        #plt.plot(np.linspace(0,1,len(ref[:700,0])), ref[:700,100]);plt.show()
 
         if self.data_type==0:   # OSSE data run
             cf = self.cloud_truth[good_data]
 
         # spectral sorting order
-        sorting_order_file = 'sorting_order.pkl'
-        if sorting_order_file not in os.listdir():
-            if self.data_type == 0:
+        if self.data_type == 0:
+            sorting_order_file = 'sorting_order_osse.pkl'
+            if sorting_order_file not in os.listdir():
                 order = self.spectral_sorting(ref, cf)
+                print('Saving sorting order to ', sorting_order_file)
+                pkl_file = open(sorting_order_file, 'wb')
+                pickle.dump(order, pkl_file)
+                pkl_file.close()
             else:
-                print('sorting order save file missing, derive it first by running on OSSE data.');sys.exit()
-            print('Saving sorting order to ', sorting_order_file)
-            pkl_file = open(sorting_order_file, 'wb')
-            pickle.dump(order, pkl_file)
-            pkl_file.close()
+                print('Reading sorting order from ', sorting_order_file)
+                pkl_file = open(sorting_order_file, 'rb')
+                order = pickle.load(pkl_file)
+                pkl_file.close()
         else:
-            print('Reading sorting order from ', sorting_order_file)
-            pkl_file = open(sorting_order_file, 'rb')
-            order = pickle.load(pkl_file)
-            pkl_file.close()
+            sorting_order_file = 'sorting_order_MAIR.pkl'
+            if sorting_order_file not in os.listdir():
+                # sorting based on clear, decently bright spectrum, sort of random selection
+                order = np.argsort(ref[:,100])
+                print('Saving sorting order to ', sorting_order_file)
+                pkl_file = open(sorting_order_file, 'wb')
+                pickle.dump(order, pkl_file)
+                pkl_file.close()
+            else:
+                print('Reading sorting order from ', sorting_order_file)
+                pkl_file = open(sorting_order_file, 'rb')
+                order = pickle.load(pkl_file)
+                pkl_file.close()
 
-            if ref.shape[0] != len(order):
-                print('Need to derive sorting order')
-                sys.exit()
 
         ref = ref[order, :].T
         X = np.stack([sza, msi], axis=1)
