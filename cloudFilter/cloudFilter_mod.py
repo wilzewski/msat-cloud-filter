@@ -57,6 +57,8 @@ class cloudFilter(object):
         self.quality_flag = np.zeros(filter_shape)
         self.postfilter = np.zeros(filter_shape)
         self.l1_ref = np.zeros(filter_shape)
+        self.l1_valid_mask = np.zeros(self.l1_ref.shape)
+        self.l1_wav = np.zeros(filter_shape)
         self.l1_sza = np.zeros(filter_shape)
         self.l1_alb = np.zeros(filter_shape)
         self.msi_ref = np.zeros(filter_shape)
@@ -88,10 +90,10 @@ class cloudFilter(object):
             self.msi_ref = pickle.load(pkl_file)
             pkl_file.close()
 
-        f, (ax1, ax2) = plt.subplots(2,1)
-        ax1.pcolor(l1_lon[0], l1_lat[0], self.l1_ref[0][630,:,:])
-        ax2.pcolor(l1_lon[0], l1_lat[0], self.msi_ref[0])
-        plt.show()
+        #f, (ax1, ax2) = plt.subplots(2,1)
+        #ax1.pcolor(l1_lon[0], l1_lat[0], self.l1_ref[0][630,:,:])
+        #ax2.pcolor(l1_lon[0], l1_lat[0], self.msi_ref[0])
+        #plt.show()
         
         X = self.prepare_prefilter_data()
         scaler = StandardScaler()
@@ -101,6 +103,11 @@ class cloudFilter(object):
         pred = self.prefilter_model.predict(X)
         print(pred)
         print(pred.shape)
+
+        tmp = np.zeros(self.prefilter.shape)
+        tmp[self.l1_ref_non_nan] = pred
+        
+        self.prefilter = tmp
 
         return self.prefilter
 
@@ -352,25 +359,28 @@ class cloudFilter(object):
         import matplotlib.pyplot as plt
         import os
         
-        # when running on the MAIR data, l1 fields need to be squeezed
-        # to remove leading "1"/nfiles dimension, should do this differently!!!
-        self.l1_sza = self.l1_sza.squeeze()
-        self.l1_ref = self.l1_ref.squeeze()
-        self.msi_ref = self.msi_ref.squeeze()
+        if self.data_type == 1:
+            # when running on the MAIR data, l1 fields need to be squeezed
+            # to remove leading "1"/nfiles dimension, should do this differently!
+            self.l1_sza = self.l1_sza.squeeze()
+            self.l1_ref = self.l1_ref.squeeze()
+            self.msi_ref = self.msi_ref.squeeze()
 
         # clean up conditions: high sun, good spectra, no water
         good_data = np.where((self.l1_sza <= 70) &\
                              (np.nanmean(self.l1_ref, axis=0) <= 1)&\
+                              # remove all nan spectra (MAIR)
+                             (~np.isnan(self.l1_ref).all(axis=0))&\
                              (self.msi_ref > 0.001))   # TODO keep water?
+        self.l1_valid_mask = good_data
 
         msi = self.msi_ref[good_data]
         sza = self.l1_sza[good_data]
         ref = self.l1_ref[:, good_data[0], good_data[1]]
+        #plt.plot(np.linspace(0,1,len(ref[:,0])), ref[:,0]);plt.show()
+
         if self.data_type==0:   # OSSE data run
             cf = self.cloud_truth[good_data]
-
-        if np.where(np.isnan(ref))[0].shape[0] > 0:
-            print('bad reflectance input'); sys.exit()
 
         # spectral sorting order
         sorting_order_file = 'sorting_order.pkl'
@@ -389,6 +399,10 @@ class cloudFilter(object):
             order = pickle.load(pkl_file)
             pkl_file.close()
 
+            if ref.shape[0] != len(order):
+                print('Need to derive sorting order')
+                sys.exit()
+
         ref = ref[order, :].T
         X = np.stack([sza, msi], axis=1)
         # append full, sorted reflectance spectra
@@ -400,7 +414,7 @@ class cloudFilter(object):
         l = int(ref.shape[1]/nchannels)
         for i in range(r.shape[0]):
             for j in range(r.shape[1]):
-                r[i,j] = np.mean(ref[i,j*l:(j+1)*l])
+                r[i,j] = np.nanmean(ref[i,j*l:(j+1)*l])
         X = np.hstack((X, r))
 
         if self.data_type == 0:
