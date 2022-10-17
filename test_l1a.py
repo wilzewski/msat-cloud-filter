@@ -1,6 +1,6 @@
 from cloudFilter import cloudFilter
 
-l1 = '/scratch/sao_atmos/jwilzews/DATA/MAIR/L1A/Avionics_Only_MethaneAIR_L1B_O2_20210811T162853_20210811T162923_20220430T112041.nc'
+l1 = '/scratch/sao_atmos/jwilzews/DATA/MAIR/L1A/Avionics_Only_MethaneAIR_L1B_CH4_20210811T162853_20210811T162923_20220505T094719.nc'
 
 msi = '/scratch/sao_atmos/jwilzews/DATA/MSI/MSI_B11'
 
