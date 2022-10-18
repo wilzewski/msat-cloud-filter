@@ -71,12 +71,13 @@ class cloudFilter(object):
         import numpy as np
         import matplotlib.pyplot as plt
         from sklearn.preprocessing import StandardScaler
+        import pickle
+        import os
+        from scipy import ndimage
 
         print('read_l1()')
         self.l1_sza, self.l1_ref, l1_lon, l1_lat = self.read_l1()
 
-        import pickle
-        import os
         if 'tmp.pkl' not in os.listdir():
             print('read_msi_B11()')
             self.msi_ref = self.read_msi_B11(l1_lon, l1_lat)
@@ -90,11 +91,8 @@ class cloudFilter(object):
             self.msi_ref = pickle.load(pkl_file)
             pkl_file.close()
 
-        #f, (ax1, ax2) = plt.subplots(2,1)
-        #ax1.pcolor(l1_lon[0], l1_lat[0], self.l1_ref[0][630,:,:])
-        #ax2.pcolor(l1_lon[0], l1_lat[0], self.msi_ref[0])
-        #plt.show()
-        
+        self.msi_ref = ndimage.maximum_filter(self.msi_ref, size=(1,200,50))
+
         X = self.prepare_prefilter_data()
         scaler = StandardScaler()
         scaler.fit(X)
@@ -107,9 +105,12 @@ class cloudFilter(object):
         
         self.prefilter = tmp
         
-        #plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
-        #plt.imshow(self.prefilter, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
-        #plt.show()
+        plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
+        plt.imshow(self.prefilter, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
+        plt.savefig('prefilter.png')
+        plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
+        plt.imshow(self.msi_ref, aspect='auto', interpolation='none', alpha=0.5)
+        plt.savefig('l1_vs_msi_filtered_test.png')
 
         return self.prefilter
 
