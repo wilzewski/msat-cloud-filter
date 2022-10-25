@@ -7,6 +7,7 @@ class cloudFilter(object):
     def __init__(self, l1, msi, glint=False, osse=False):
 
         from netCDF4 import Dataset
+        from collections import deque
         import numpy as np
         import os 
         import glob
@@ -34,29 +35,65 @@ class cloudFilter(object):
         # check if level1 is file or directory:
         if os.path.isdir(os.path.abspath(l1)):
             self.l1_bundle = sorted(glob.glob(l1 + '/*.nc'))
-            self.l1_name = l1.split('.')[1].split('.')[0]
-            if len(self.l1_bundle)==0:
-                print('Provide L1 directory containing netCDF data files')
-                sys.exit()
+            if len(self.l1_bundle) == 0 : # is this a top level dir w/ many OSSE orbits?
+                self.l1istopdir = True
+                self.l1_orbits = sorted(glob.glob(l1 + '/*subset'))
+                self.l1_bundle = deque()
+                self.l1_name = deque()
+                for i in range(len(self.l1_orbits)):
+                    self.l1_bundle.append(sorted(glob.glob(self.l1_orbits[i] + '/*.nc')))
+                    self.l1_name.append(self.l1_orbits[i].split('.')[1].split('.')[0])
+                self.l1_bundle = np.array(self.l1_bundle)
+                self.l1_name = np.array(self.l1_name)
+                if len(self.l1_orbits) == 0 :
+                    print('Provide L1 directory containing orbit directories or netCDF data files')
+                    sys.exit()
+            else:
+                self.l1istopdir = False
+                self.l1_name = l1.split('.')[1].split('.')[0]
+                self.l1_orbits = []
         else:
             # l1 is one file
+            self.l1istopdir = False
             self.l1_bundle = []
+            self.l1_orbits = []
             self.l1_bundle.append(os.path.abspath(l1))
             self.l1_name = l1.split('/')[-2]
 
         # Initialize
         if osse:
-            filter_shape = (Dataset(self.l1_bundle[0]).dimensions['jmx'].size,
-                         Dataset(self.l1_bundle[0]).dimensions['imx'].size)
-            self.cloud_truth = np.zeros(filter_shape)
+            if self.l1istopdir:
+                # set filter to max dimension found in the orbits:
+                alt, act, ch = 0, 0, 0
+                for i in range(self.l1_bundle.shape[0]):
+                    if Dataset(self.l1_bundle[i,0]).dimensions['jmx'].size > alt:
+                        alt = Dataset(self.l1_bundle[i,0]).dimensions['jmx'].size
+                    if Dataset(self.l1_bundle[i,0]).dimensions['imx'].size > act:
+                        act = Dataset(self.l1_bundle[i,0]).dimensions['imx'].size
+                # spectral channel index is not expected to vary in OSSE:
+                ch = Dataset(self.l1_bundle[0,0]).dimensions['wmx_2'].size
+
+                filter_shape = (self.l1_bundle.shape[0],alt,act)
+                filter_shape_ref = (self.l1_bundle.shape[0],ch,alt,act)
+                self.cloud_truth = np.zeros(filter_shape)
+            else:
+                filter_shape = (Dataset(self.l1_bundle[0]).dimensions['jmx'].size,
+                             Dataset(self.l1_bundle[0]).dimensions['imx'].size)
+                filter_shape_ref = (Dataset(self.l1_bundle[0]).dimensions['wmx_2'].size,
+                             Dataset(self.l1_bundle[0]).dimensions['jmx'].size,
+                             Dataset(self.l1_bundle[0]).dimensions['imx'].size)
+                self.cloud_truth = np.zeros(filter_shape)
         else:
             filter_shape = (Dataset(self.l1_bundle[0]).dimensions['x'].size,
+                         Dataset(self.l1_bundle[0]).dimensions['y'].size)
+            filter_shape_ref = (Dataset(self.l1_bundle[0]).dimensions['w1'].size,
+                         Dataset(self.l1_bundle[0]).dimensions['x'].size,
                          Dataset(self.l1_bundle[0]).dimensions['y'].size)
 
         self.prefilter = np.zeros(filter_shape)
         self.quality_flag = np.zeros(filter_shape)
         self.postfilter = np.zeros(filter_shape)
-        self.l1_ref = np.zeros(filter_shape)
+        self.l1_ref = np.zeros(filter_shape_ref)
         self.l1_valid_mask = np.zeros(self.l1_ref.shape)
         self.l1_wav = np.zeros(filter_shape)
         self.l1_sza = np.zeros(filter_shape)
@@ -131,8 +168,8 @@ class cloudFilter(object):
 
         # loop through MSI files:
         for f in sorted(os.listdir(self.msi_path)):
-            if 'T12TVK' not in f:
-                continue
+            #if 'T12TVK' not in f:
+            #    continue
 
             file_size = os.path.getsize(self.msi_path+'/'+f)
             # read MSI information
@@ -293,8 +330,20 @@ class cloudFilter(object):
 
         if self.data_type==0:
             print('read_l1()')
-            self.l1_sza, self.l1_alb, self.l1_ref, \
-                 self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = self.read_l1()
+            if 'osse_l1.pkl' not in os.listdir():
+                self.l1_sza, self.l1_alb, self.l1_ref, \
+                     self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = self.read_l1()
+                pkl_file = open('osse_l1.pkl', 'wb')
+                pickle.dump([self.l1_sza, self.l1_alb, self.l1_ref, \
+                     self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat], pkl_file)
+                pkl_file.close()
+            else:
+                print('...from file osse_l1.pkl')
+                pkl_file = open('osse_l1.pkl', 'rb')
+                d = pickle.load(pkl_file)
+                self.l1_sza, self.l1_alb, self.l1_ref, \
+                     self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7]
+                pkl_file.close()
 
             print('read_msi_clim()')
             self.msi_ref = self.read_msi_clim(l1_lon, l1_lat, l1_clon, l1_clat)
@@ -631,66 +680,170 @@ class cloudFilter(object):
       
     def read_l1(self):
         from netCDF4 import Dataset
+        import matplotlib.pyplot as plt
         import sys
         import numpy as np
         import ephem
         import datetime
 
-        sza, alb, lon, lat, xch4_true, cf, l1_ref, clon, clat, yyyymmdd = [],[],[],[],[],[],[],[],[],[]
+        sza, alb, lon, lat, xch4_true, cf,\
+                 l1_ref, clon, clat, yyyymmdd = [],[],[],[],[],[],[],[],[],[]
 
         if self.data_type==0:
-            for f in self.l1_bundle:
-                d = Dataset(f)
-                yyyymmdd.append(np.float(f.split('.')[0].split('_')[-1]))
-                ff = f.split('/')[-1].split('_')
-                ix0 = int(ff[1])-1
-                ixf = int(ff[2])
-                it0 = int(ff[4])-1
-                itf = int(ff[5].split('.')[0])
+            if self.l1istopdir:
+                s = np.ones(self.prefilter.shape) * np.nan
+                a = np.ones(self.prefilter.shape) * np.nan
+                lo = np.ones(self.prefilter.shape) * np.nan
+                la = np.ones(self.prefilter.shape) * np.nan
+                xch4_t = np.ones(self.prefilter.shape) * np.nan
+                ref = np.ones(self.l1_ref.shape) * np.nan
+                clo = np.ones((self.prefilter.shape[0], 4, self.prefilter.shape[1], self.prefilter.shape[2])) * np.nan
+                cla = np.ones((self.prefilter.shape[0], 4, self.prefilter.shape[1], self.prefilter.shape[2])) * np.nan
+                c = np.ones(self.prefilter.shape)*np.nan
+                date = np.ones(self.prefilter.shape[0])*np.nan
+                #count = 0
+                for i in range(len(self.l1_orbits)):
+                    #count += 1
+                    #if count >2:
+                    #    break
+                    if '0_077h' in self.l1_orbits[i]:
+                        s[i,:,:] = np.ones((self.prefilter.shape[1],self.prefilter.shape[2]))*np.nan
+                        continue
+                    sza, alb, lon, lat, xch4_true, cf,\
+                       l1_ref, clon, clat, yyyymmdd = [],[],[],[],[],[],[],[],[],[]
 
-                sza_tmp = d.groups['Level1'].variables['SolarZenithAngle'][0,it0:itf,ix0:ixf].T.squeeze()
-                # insert nan for missing pixels so that shape is consistent with input data shape
-                sza_tmp = np.pad(sza_tmp, (it0,0), 'constant', constant_values=(np.nan))
-                sza.append( sza_tmp )
-                rad_tmp = d.groups['RTM_Band2'].variables['Radiance_I'][:,it0:itf,ix0:ixf].T
-                rad_tmp = rad_tmp * d.groups['RTM_Band2'].variables['Irradiance'][:,it0:itf,ix0:ixf].T
-                rad_tmp = rad_tmp.squeeze()
-                rad_tmp = np.pad(rad_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
+                    print('\n', self.l1_orbits[i])
+                    for f in self.l1_bundle[i]:
+                        d = Dataset(f)
+                        yyyymmdd.append(np.float(f.split('.')[0].split('_')[-1]))
+                        ff = f.split('/')[-1].split('_')
+                        ix0 = int(ff[1])-1
+                        ixf = int(ff[2])
+                        it0 = int(ff[4])-1
+                        itf = int(ff[5].split('.')[0])
+    
+                        sza_tmp = d.groups['Level1'].variables['SolarZenithAngle'][0,it0:itf,ix0:ixf].T.squeeze()
+                        # insert nan for missing pixels so that shape is consistent with input data shape
+                        sza_tmp = np.pad(sza_tmp, (it0,0), 'constant', constant_values=(np.nan))
+                        sza.append( sza_tmp )
+                        rad_tmp = d.groups['RTM_Band2'].variables['Radiance_I'][:,it0:itf,ix0:ixf].T
+                        rad_tmp = rad_tmp * d.groups['RTM_Band2'].variables['Irradiance'][:,it0:itf,ix0:ixf].T
+                        rad_tmp = rad_tmp.squeeze()
+                        rad_tmp = np.pad(rad_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
+    
+                        # calculate reflectance spectra
+                        I0_CH4 = 1.963e14  # approx I0 @ 1621 nm [photons/s/cm2/nm] 
+                                           # (from chance_jpl_mrg_hitran_200-16665nm.nc)
+                        l1_ref.append( (np.pi*np.array(rad_tmp).T / 
+                                      (np.cos(np.pi*np.array(sza_tmp)/180.)*I0_CH4)).T )
+    
+                        alb_tmp = d.groups['OptProp_Band1'].variables['BRDF_KernelAmplitude_isotr'][:,it0:itf,ix0:ixf].T
+                        alb_tmp = np.mean(alb_tmp,axis=2).T.squeeze()   # why average?
+                        alb.append( np.pad(alb_tmp, (it0,0), 'constant', constant_values=(np.nan))  )
+    
+                        lat_tmp = d.groups['Level1'].variables['Latitude'][0,it0:itf,ix0:ixf].T.squeeze()
+                        lat_tmp = np.pad(lat_tmp, (it0,0), 'constant', constant_values=(np.nan))
+                        lat.append( lat_tmp )
+                        lon_tmp= d.groups['Level1'].variables['Longitude'][0,it0:itf,ix0:ixf].T.squeeze()
+                        lon_tmp = np.pad(lon_tmp, (it0,0), 'constant', constant_values=(np.nan))
+                        lon.append( lon_tmp )
+    
+                        clat_tmp = d.groups['Level1'].variables['CornerLatitudes'][:,it0:itf,ix0:ixf].T.squeeze()
+                        clat_tmp = np.pad(clat_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
+                        clat.append( clat_tmp )
+                        clon_tmp = d.groups['Level1'].variables['CornerLongitudes'][:,it0:itf,ix0:ixf].T.squeeze()
+                        clon_tmp = np.pad(clon_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
+                        clon.append( clon_tmp )
+    
+                        #xch4_tmp = d.groups['Profile'].variables['CH4_ProxyMixingRatio'][0,it0:itf,ix0:ixf].T
+                        #xch4_tmp = xch4_tmp[:].T.squeeze()
+                        #xch4_true.append( np.pad(xch4_tmp, (it0,0), 'constant', constant_values=(np.nan)) )
+    
+                        cf.append(self.get_cloud_fraction(self.truth_path, f, ix0, ixf))
 
-                # calculate reflectance spectra
-                I0_CH4 = 1.963e14  # approx I0 @ 1621 nm [photons/s/cm2/nm] 
-                                   # (from chance_jpl_mrg_hitran_200-16665nm.nc)
-                l1_ref.append( (np.pi*np.array(rad_tmp).T / 
-                              (np.cos(np.pi*np.array(sza_tmp)/180.)*I0_CH4)).T )
+                    # if along-track dimension of orbit is less than expected: fill with nans
+                    if itf != self.prefilter.shape[1]:
+                        diff = self.prefilter.shape[1] - itf
+                        s[i,:,:] = np.pad(np.array(sza).T, ((0,diff), (0,0)), mode='constant', constant_values=(np.nan,))
+                        a[i,:,:] = np.pad(np.array(alb).T, ((0,diff), (0,0)), mode='constant', constant_values=(np.nan,))
+                        lo[i,:,:] = np.pad(np.array(lon).T, ((0,diff), (0,0)), mode='constant', constant_values=(np.nan,))
+                        la[i,:,:] = np.pad(np.array(lat).T, ((0,diff), (0,0)), mode='constant', constant_values=(np.nan,))
+                        #xch4_t[i,:,:] = np.pad(np.array(xch4_true).T, ((0,diff), (0,0)), mode='constant', constant_values=(np.nan,))
+                        ref[i,:,:,:] = np.pad(np.array(l1_ref).T, ((0,0), (0,diff), (0,0)), mode='constant', constant_values=(np.nan,))
+                        clo[i,:,:,:] = np.pad(np.array(clon).T, ((0,0), (0,diff), (0,0)), mode='constant', constant_values=(np.nan,))
+                        cla[i,:,:,:] = np.pad(np.array(clat).T, ((0,0), (0,diff), (0,0)), mode='constant', constant_values=(np.nan,))
+                        c[i,:,:] = np.array(cf).T # cloud fraction is already filled to right extent
+                    else:
+                        s[i,:,:] = np.array(sza).T
+                        a[i,:,:] = np.array(alb).T
+                        lo[i,:,:] = np.array(lon).T
+                        la[i,:,:] = np.array(lat).T
+                        ref[i,:,:,:] = np.array(l1_ref).T
+                        clo[i,:,:,:] = np.array(clon).T
+                        cla[i,:,:,:] = np.array(clat).T
+                        c[i,:,:] = np.array(cf).T
+                        #xch4_t[i,:,:] = np.array(xch4_true).T
+                    date[i] = np.nanmedian(yyyymmdd)
+    
+                self.yyyymmdd = np.nanmedian(date)
 
-                alb_tmp = d.groups['OptProp_Band1'].variables['BRDF_KernelAmplitude_isotr'][:,it0:itf,ix0:ixf].T
-                alb_tmp = np.mean(alb_tmp,axis=2).T.squeeze()   # why average?
-                alb.append( np.pad(alb_tmp, (it0,0), 'constant', constant_values=(np.nan))  )
+                return s, a, ref,\
+                     c, lo, la,\
+                     clo, cla #, np.array(xch4_true).T
 
-                lat_tmp = d.groups['Level1'].variables['Latitude'][0,it0:itf,ix0:ixf].T.squeeze()
-                lat_tmp = np.pad(lat_tmp, (it0,0), 'constant', constant_values=(np.nan))
-                lat.append( lat_tmp )
-                lon_tmp= d.groups['Level1'].variables['Longitude'][0,it0:itf,ix0:ixf].T.squeeze()
-                lon_tmp = np.pad(lon_tmp, (it0,0), 'constant', constant_values=(np.nan))
-                lon.append( lon_tmp )
+            else:
+                for f in self.l1_bundle:
+                    d = Dataset(f)
+                    yyyymmdd.append(np.float(f.split('.')[0].split('_')[-1]))
+                    ff = f.split('/')[-1].split('_')
+                    ix0 = int(ff[1])-1
+                    ixf = int(ff[2])
+                    it0 = int(ff[4])-1
+                    itf = int(ff[5].split('.')[0])
 
-                clat_tmp = d.groups['Level1'].variables['CornerLatitudes'][:,it0:itf,ix0:ixf].T.squeeze()
-                clat_tmp = np.pad(clat_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
-                clat.append( clat_tmp )
-                clon_tmp = d.groups['Level1'].variables['CornerLongitudes'][:,it0:itf,ix0:ixf].T.squeeze()
-                clon_tmp = np.pad(clon_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
-                clon.append( clon_tmp )
+                    sza_tmp = d.groups['Level1'].variables['SolarZenithAngle'][0,it0:itf,ix0:ixf].T.squeeze()
+                    # insert nan for missing pixels so that shape is consistent with input data shape
+                    sza_tmp = np.pad(sza_tmp, (it0,0), 'constant', constant_values=(np.nan))
+                    sza.append( sza_tmp )
+                    rad_tmp = d.groups['RTM_Band2'].variables['Radiance_I'][:,it0:itf,ix0:ixf].T
+                    rad_tmp = rad_tmp * d.groups['RTM_Band2'].variables['Irradiance'][:,it0:itf,ix0:ixf].T
+                    rad_tmp = rad_tmp.squeeze()
+                    rad_tmp = np.pad(rad_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
 
-                #xch4_tmp = d.groups['Profile'].variables['CH4_ProxyMixingRatio'][0,it0:itf,ix0:ixf].T
-                #xch4_tmp = xch4_tmp[:].T.squeeze()
-                #xch4_true.append( np.pad(xch4_tmp, (it0,0), 'constant', constant_values=(np.nan)) )
+                    # calculate reflectance spectra
+                    I0_CH4 = 1.963e14  # approx I0 @ 1621 nm [photons/s/cm2/nm] 
+                                       # (from chance_jpl_mrg_hitran_200-16665nm.nc)
+                    l1_ref.append( (np.pi*np.array(rad_tmp).T / 
+                                  (np.cos(np.pi*np.array(sza_tmp)/180.)*I0_CH4)).T )
 
-                cf.append(self.get_cloud_fraction(self.truth_path, f, ix0, ixf))
+                    alb_tmp = d.groups['OptProp_Band1'].variables['BRDF_KernelAmplitude_isotr'][:,it0:itf,ix0:ixf].T
+                    alb_tmp = np.mean(alb_tmp,axis=2).T.squeeze()   # why average?
+                    alb.append( np.pad(alb_tmp, (it0,0), 'constant', constant_values=(np.nan))  )
 
-            self.yyyymmdd = np.median(yyyymmdd)
-            return np.array(sza).T, np.array(alb).T, np.array(l1_ref).T,\
-                     np.array(cf).T, np.array(lon).T, np.array(lat).T,\
-                     np.array(clon).T, np.array(clat).T #, np.array(xch4_true).T
+                    lat_tmp = d.groups['Level1'].variables['Latitude'][0,it0:itf,ix0:ixf].T.squeeze()
+                    lat_tmp = np.pad(lat_tmp, (it0,0), 'constant', constant_values=(np.nan))
+                    lat.append( lat_tmp )
+                    lon_tmp= d.groups['Level1'].variables['Longitude'][0,it0:itf,ix0:ixf].T.squeeze()
+                    lon_tmp = np.pad(lon_tmp, (it0,0), 'constant', constant_values=(np.nan))
+                    lon.append( lon_tmp )
+
+                    clat_tmp = d.groups['Level1'].variables['CornerLatitudes'][:,it0:itf,ix0:ixf].T.squeeze()
+                    clat_tmp = np.pad(clat_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
+                    clat.append( clat_tmp )
+                    clon_tmp = d.groups['Level1'].variables['CornerLongitudes'][:,it0:itf,ix0:ixf].T.squeeze()
+                    clon_tmp = np.pad(clon_tmp, [(it0,0),(0,0)], 'constant', constant_values=(np.nan))
+                    clon.append( clon_tmp )
+
+                    #xch4_tmp = d.groups['Profile'].variables['CH4_ProxyMixingRatio'][0,it0:itf,ix0:ixf].T
+                    #xch4_tmp = xch4_tmp[:].T.squeeze()
+                    #xch4_true.append( np.pad(xch4_tmp, (it0,0), 'constant', constant_values=(np.nan)) )
+
+                    cf.append(self.get_cloud_fraction(self.truth_path, f, ix0, ixf))
+
+                self.yyyymmdd = np.median(yyyymmdd)
+                return np.array(sza).T, np.array(alb).T, np.array(l1_ref).T,\
+                         np.array(cf).T, np.array(lon).T, np.array(lat).T,\
+                         np.array(clon).T, np.array(clat).T #, np.array(xch4_true).T
 
         else:
             for f in self.l1_bundle:
@@ -759,13 +912,23 @@ class cloudFilter(object):
         import sys
 
         cloud_fraction = []
-        for f in os.listdir(osse_path):
+        for f in sorted(os.listdir(osse_path)):
             if l1_file.split('h_')[0].split('SAT')[1] in f:
                 profile_input = Dataset(os.path.join(osse_path,f))
                 cf = profile_input['SupportingData/CloudFraction'][:,ix0:ixf].squeeze()
                 cloud_fraction.append(cf)
-        if len(cloud_fraction[0]) != self.prefilter.shape[0]:
-            print('OSSE Truth data wrong dimension');sys.exit()
+        # check status and catch OSSE orbits with fewer along-track data:
+        if self.l1istopdir:
+            if len(cloud_fraction[0]) != self.prefilter.shape[1]:
+                diff = self.prefilter.shape[1] - len(cloud_fraction[0])
+                if diff > 0.8 * self.prefilter.shape[1]:
+                    print('L1 has substantially less along-track data than expected');sys.exit()
+                else:  # pad shorter OSSE orbits with nans
+                    for j in range(len(cloud_fraction)):
+                        cloud_fraction[j] = np.pad(cloud_fraction[j], (0,diff), mode='constant', constant_values=(np.nan,))
+        else:
+            if len(cloud_fraction[0]) != self.prefilter.shape[0]:
+                print('OSSE Truth data wrong dimension');sys.exit()
 
         return np.array(cloud_fraction).squeeze()
 
