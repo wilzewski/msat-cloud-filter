@@ -70,7 +70,7 @@ class cloudFilter(object):
                         alt = Dataset(self.l1_bundle[i,0]).dimensions['jmx'].size
                     if Dataset(self.l1_bundle[i,0]).dimensions['imx'].size > act:
                         act = Dataset(self.l1_bundle[i,0]).dimensions['imx'].size
-                # spectral channel index is not expected to vary in OSSE:
+                # spectral channel length is not expected to vary in OSSE:
                 ch = Dataset(self.l1_bundle[0,0]).dimensions['wmx_2'].size
 
                 filter_shape = (self.l1_bundle.shape[0],alt,act)
@@ -145,9 +145,11 @@ class cloudFilter(object):
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
         plt.imshow(self.prefilter, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
         plt.savefig('prefilter.png')
+        plt.show()
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
         plt.imshow(self.msi_ref, aspect='auto', interpolation='none', alpha=0.5)
         plt.savefig('l1_vs_msi_filtered_test.png')
+        plt.show()
 
         return self.prefilter
 
@@ -345,6 +347,8 @@ class cloudFilter(object):
                      self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7]
                 pkl_file.close()
 
+            print(self.l1_ref.shape)
+
             print('read_msi_clim()')
             self.msi_ref = self.read_msi_clim(l1_lon, l1_lat, l1_clon, l1_clat)
 
@@ -410,7 +414,13 @@ class cloudFilter(object):
         import sys
         import matplotlib.pyplot as plt
         import os
-        
+        if self.l1istopdir:
+            # remove orbit dimension from data
+            self.l1_sza = self.l1_sza.reshape(-1, self.l1_sza.shape[2])
+            self.l1_ref = self.l1_ref.transpose(1,0,2,3).reshape(self.l1_ref.shape[1], -1, self.l1_ref.shape[3])
+            self.msi_ref = self.msi_ref.reshape(-1, self.msi_ref.shape[2])
+            self.cloud_truth = self.cloud_truth.reshape(-1, self.cloud_truth.shape[2])
+
         if self.data_type == 1:
             # when running on the MAIR data, l1 fields need to be squeezed
             # to remove leading "1"/nfiles dimension, should do this differently!
@@ -498,12 +508,21 @@ class cloudFilter(object):
         # find sorting order
         import numpy as np
         import matplotlib.pyplot as plt
+        import sys
 
         ref_0 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]==0.0]), axis=0)
         order = np.argsort(ref_0)
-        #plt.title('N='+str(ref.shape[1]))
-        #plt.plot(np.linspace(0,1,ref_0.shape[0]), ref_0)
-        #plt.plot(np.linspace(0,1,ref_0.shape[0]), ref_0[order]);plt.show()
+        #f, (ax1, ax2) = plt.subplots(1,2, figsize=(8,5), sharey=True)
+        #ax1.plot(np.linspace(1598,1676,ref_0.shape[0]), ref_0)
+        #ax2.plot(np.linspace(0,ref_0.shape[0],ref_0.shape[0]), ref_0[order])
+        #fs = 12
+        #ax1.set_xlabel('Wavelength / nm', fontsize=fs)
+        #ax1.set_title('Simulated Spectrum', fontsize=fs)
+        #ax2.set_title('Sorted by Radiance', fontsize=fs)
+        #ax2.set_xlabel('Spectral Index', fontsize=fs)
+        #ax1.set_ylabel('Radiance / 1e14 photons/s/nm/cm$^2$/sr', fontsize=fs)
+        #plt.savefig('spectral_sorting_osse.png', dpi=300)
+        #plt.show();sys.exit()
         return order
 
     def av_msi_per_l1(self, l1_lon, msi_clim, points, c11, c12, c21, c22, c31, c32, c41, c42):
@@ -612,65 +631,124 @@ class cloudFilter(object):
                 lon = data[0]; lat = data[1]; msi_clim = data[2]
                 pkl_file.close()
 
-            msi_ref_file = self.l1_name+'_msi_ref.pkl'
-            if msi_ref_file not in os.listdir():
-                print('Colocate L1 and MSI')
+            if self.l1istopdir:
+                msi_ref = np.zeros(self.prefilter.shape) * np.nan
+                for i in range(self.msi_ref.shape[0]):
+                    if '0_077' in self.l1_name[i]:
+                        continue
+                    msi_ref_file = self.l1_name[i]+'_msi_ref.pkl'
+                    if msi_ref_file not in os.listdir():
+                        print('Colocate L1 and MSI')
+        
+                        # center points of the gridded msi data
+                        lo, la = lon + grid_spacing/2, lat + grid_spacing/2 
+                        lo, la = lo.flatten(), la.flatten()
+                        points = np.vstack((lo, la)).T
+                        # throw out l1 fill values
+                        l1_clon[np.abs(l1_clon)>180] = np.nan
+                        l1_clat[np.abs(l1_clat)>90] = np.nan
+                        l1_lon[np.abs(l1_lon)>180] = np.nan
+                        l1_lat[np.abs(l1_lat)>90] = np.nan
+                        # reshape for pixel generation
+                        l1alt, l1act = l1_lon.shape[1],l1_lon.shape[2]
+                        l1_lo = l1_lon[i,:,:].reshape(l1_lon.shape[1]*l1_lon.shape[2])
+                        l1_la = l1_lat[i,:,:].reshape(l1_lat.shape[1]*l1_lat.shape[2])
+                        l1_clo = l1_clon[i,:,:,:].reshape((l1_clon.shape[1], l1_clon.shape[2]*l1_clon.shape[3]))
+                        l1_cla = l1_clat[i,:,:,:].reshape((l1_clat.shape[1], l1_clat.shape[2]*l1_clat.shape[3]))
+        
+                        st = time.time()
+                        msi_r = Parallel(n_jobs=6)(\
+                             delayed(self.av_msi_per_l1)\
+                             (l1_lo[j], msi_clim, points, l1_clo[0,j], l1_cla[0,j], l1_clo[1,j], l1_cla[1,j], l1_clo[2,j], l1_cla[2,j], l1_clo[3,j], l1_cla[3,j])\
+                             for j in range(l1_lo.shape[0]))
+                        print(np.array(msi_r).shape)
+                        print(msi_ref[i,:,:].shape)
+                        msi_ref[i,:,:] = np.array(msi_r).reshape(l1alt, l1act)
+        
+                        #for i in range(l1_lon.shape[0]):
+                        #    if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
+                        #        continue
+                        #    else:
+                        #        c1 = (l1_clon[0,i], l1_clat[0,i])
+                        #        c2 = (l1_clon[1,i], l1_clat[1,i])
+                        #        c3 = (l1_clon[2,i], l1_clat[2,i])
+                        #        c4 = (l1_clon[3,i], l1_clat[3,i])
+                        #        #mask = Parallel(n_jobs=2)(delayed(self.mask_hits)(points, c1, c2, c3, c4, lon.shape))
+                        #        mask = self.mask_hits(points, c1, c2, c3, c4, lon.shape)
+                        #        msi_ref[i] = np.nanmean(msi_clim[mask])
+                        #msi_ref=np.array(msi_ref)
+                        #msi_ref.reshape(lon.shape)
+        
+                        print('Finished after', np.round(time.time()-st, 2), ' sec')
+                        pkl_file = open(msi_ref_file, 'wb')
+                        pickle.dump([msi_ref[i,:,:]], pkl_file)
+                        pkl_file.close()
+                    else:
+                        print('Read colocated MSI reflectance from ', msi_ref_file)
+                        pkl_file = open(msi_ref_file, 'rb')
+                        data = pickle.load(pkl_file)
+                        msi_ref[i,:,:] = np.array(data[0]).reshape(l1_lon.shape[1],l1_lon.shape[2])
+                        pkl_file.close()
 
-                # center points of the gridded msi data
-                lo, la = lon + grid_spacing/2, lat + grid_spacing/2 
-                lo, la = lo.flatten(), la.flatten()
-                points = np.vstack((lo, la)).T
-
-                # throw out l1 fill values
-                l1_clon[np.abs(l1_clon)>180] = np.nan
-                l1_clat[np.abs(l1_clat)>90] = np.nan
-                l1_lon[np.abs(l1_lon)>180] = np.nan
-                l1_lat[np.abs(l1_lat)>90] = np.nan
-                # reshape for pixel generation
-                l1alt, l1act = l1_lon.shape[0],l1_lon.shape[1]
-                l1_lon = l1_lon.reshape(l1_lon.shape[0]*l1_lon.shape[1])
-                l1_lat = l1_lat.reshape(l1_lat.shape[0]*l1_lat.shape[1])
-                l1_clon = l1_clon.reshape((l1_clon.shape[0], l1_clon.shape[1]*l1_clon.shape[2]))
-                l1_clat = l1_clat.reshape((l1_clat.shape[0], l1_clat.shape[1]*l1_clat.shape[2]))
-
-                st = time.time()
-                msi_ref = Parallel(n_jobs=6)(\
-                     delayed(self.av_msi_per_l1)\
-                     (l1_lon[i], msi_clim, points, l1_clon[0,i], l1_clat[0,i], l1_clon[1,i], l1_clat[1,i], l1_clon[2,i], l1_clat[2,i], l1_clon[3,i], l1_clat[3,i])\
-                     for i in range(l1_lon.shape[0]))
-                msi_ref = np.array(msi_ref).reshape(l1alt, l1act)
-
-                #for i in range(l1_lon.shape[0]):
-                #    if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
-                #        continue
-                #    else:
-                #        c1 = (l1_clon[0,i], l1_clat[0,i])
-                #        c2 = (l1_clon[1,i], l1_clat[1,i])
-                #        c3 = (l1_clon[2,i], l1_clat[2,i])
-                #        c4 = (l1_clon[3,i], l1_clat[3,i])
-                #        #mask = Parallel(n_jobs=2)(delayed(self.mask_hits)(points, c1, c2, c3, c4, lon.shape))
-                #        mask = self.mask_hits(points, c1, c2, c3, c4, lon.shape)
-                #        msi_ref[i] = np.nanmean(msi_clim[mask])
-                #msi_ref=np.array(msi_ref)
-                #msi_ref.reshape(lon.shape)
-
-                print('Finished after', np.round(time.time()-st, 2), ' sec')
-                pkl_file = open(msi_ref_file, 'wb')
-                pickle.dump([msi_ref], pkl_file)
-                pkl_file.close()
             else:
-                print('Read colocated MSI reflectance from ', msi_ref_file)
-                pkl_file = open(msi_ref_file, 'rb')
-                data = pickle.load(pkl_file)
-                #msi_ref = data[0]
-                msi_ref = np.array(data[0]).reshape(l1_lon.shape[0],l1_lon.shape[1])
-                pkl_file.close()
+                msi_ref_file = self.l1_name+'_msi_ref.pkl'
+                if msi_ref_file not in os.listdir():
+                    print('Colocate L1 and MSI')
 
-            #plt.pcolormesh(lon, lat, msi_clim, vmin=0, vmax=1)
-            #plt.scatter(l1_lon, l1_lat, c=np.array(msi_ref).reshape(l1_lon.shape[0],l1_lon.shape[1]), vmin=0, vmax=1)
-            #plt.ylim(-90,90);plt.xlim(-180,180)
-            #plt.savefig(msi_ref_file.split('.pkl')[0]+'.png', dpi=300)
-            #plt.show()
+                    # center points of the gridded msi data
+                    lo, la = lon + grid_spacing/2, lat + grid_spacing/2 
+                    lo, la = lo.flatten(), la.flatten()
+                    points = np.vstack((lo, la)).T
+
+                    # throw out l1 fill values
+                    l1_clon[np.abs(l1_clon)>180] = np.nan
+                    l1_clat[np.abs(l1_clat)>90] = np.nan
+                    l1_lon[np.abs(l1_lon)>180] = np.nan
+                    l1_lat[np.abs(l1_lat)>90] = np.nan
+                    # reshape for pixel generation
+                    l1alt, l1act = l1_lon.shape[0],l1_lon.shape[1]
+                    l1_lon = l1_lon.reshape(l1_lon.shape[0]*l1_lon.shape[1])
+                    l1_lat = l1_lat.reshape(l1_lat.shape[0]*l1_lat.shape[1])
+                    l1_clon = l1_clon.reshape((l1_clon.shape[0], l1_clon.shape[1]*l1_clon.shape[2]))
+                    l1_clat = l1_clat.reshape((l1_clat.shape[0], l1_clat.shape[1]*l1_clat.shape[2]))
+
+                    st = time.time()
+                    msi_ref = Parallel(n_jobs=6)(\
+                         delayed(self.av_msi_per_l1)\
+                         (l1_lon[i], msi_clim, points, l1_clon[0,i], l1_clat[0,i], l1_clon[1,i], l1_clat[1,i], l1_clon[2,i], l1_clat[2,i], l1_clon[3,i], l1_clat[3,i])\
+                         for i in range(l1_lon.shape[0]))
+                    msi_ref = np.array(msi_ref).reshape(l1alt, l1act)
+
+                    #for i in range(l1_lon.shape[0]):
+                    #    if np.isnan(l1_lon[i]) or np.isnan(l1_lat[i]):
+                    #        continue
+                    #    else:
+                    #        c1 = (l1_clon[0,i], l1_clat[0,i])
+                    #        c2 = (l1_clon[1,i], l1_clat[1,i])
+                    #        c3 = (l1_clon[2,i], l1_clat[2,i])
+                    #        c4 = (l1_clon[3,i], l1_clat[3,i])
+                    #        #mask = Parallel(n_jobs=2)(delayed(self.mask_hits)(points, c1, c2, c3, c4, lon.shape))
+                    #        mask = self.mask_hits(points, c1, c2, c3, c4, lon.shape)
+                    #        msi_ref[i] = np.nanmean(msi_clim[mask])
+                    #msi_ref=np.array(msi_ref)
+                    #msi_ref.reshape(lon.shape)
+
+                    print('Finished after', np.round(time.time()-st, 2), ' sec')
+                    pkl_file = open(msi_ref_file, 'wb')
+                    pickle.dump([msi_ref], pkl_file)
+                    pkl_file.close()
+                else:
+                    print('Read colocated MSI reflectance from ', msi_ref_file)
+                    pkl_file = open(msi_ref_file, 'rb')
+                    data = pickle.load(pkl_file)
+                    msi_ref = np.array(data[0]).reshape(l1_lon.shape[0],l1_lon.shape[1])
+                    pkl_file.close()
+
+                #plt.pcolormesh(lon, lat, msi_clim, vmin=0, vmax=1)
+                #plt.scatter(l1_lon, l1_lat, c=np.array(msi_ref).reshape(l1_lon.shape[0],l1_lon.shape[1]), vmin=0, vmax=1)
+                #plt.ylim(-90,90);plt.xlim(-180,180)
+                #plt.savefig(msi_ref_file.split('.pkl')[0]+'.png', dpi=300)
+                #plt.show()
 
         else:
             msi_ref = np.zeros(self.prefilter.shape)
@@ -701,11 +779,7 @@ class cloudFilter(object):
                 cla = np.ones((self.prefilter.shape[0], 4, self.prefilter.shape[1], self.prefilter.shape[2])) * np.nan
                 c = np.ones(self.prefilter.shape)*np.nan
                 date = np.ones(self.prefilter.shape[0])*np.nan
-                #count = 0
                 for i in range(len(self.l1_orbits)):
-                    #count += 1
-                    #if count >2:
-                    #    break
                     if '0_077h' in self.l1_orbits[i]:
                         s[i,:,:] = np.ones((self.prefilter.shape[1],self.prefilter.shape[2]))*np.nan
                         continue
