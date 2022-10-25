@@ -58,7 +58,10 @@ class cloudFilter(object):
             self.l1_bundle = []
             self.l1_orbits = []
             self.l1_bundle.append(os.path.abspath(l1))
-            self.l1_name = l1.split('/')[-2]
+            if self.data_type == 0:
+                self.l1_name = l1.split('/')[-2]
+            else:
+                self.l1_name = l1.split('/')[-1].split('.nc')[0]
 
         # Initialize
         if osse:
@@ -115,16 +118,16 @@ class cloudFilter(object):
         print('read_l1()')
         self.l1_sza, self.l1_ref, l1_lon, l1_lat = self.read_l1()
 
-        if 'tmp.pkl' not in os.listdir():
+        if self.l1_name+'_msi_B11.pkl' not in os.listdir():
             print('read_msi_B11()')
             self.msi_ref = self.read_msi_B11(l1_lon, l1_lat)
 
-            pkl_file = open('tmp.pkl', 'wb')
+            pkl_file = open(self.l1_name+'_msi_B11.pkl', 'wb')
             pickle.dump(self.msi_ref, pkl_file)
             pkl_file.close()
         else:
             print('read msi_ref from file')
-            pkl_file = open('tmp.pkl', 'rb')
+            pkl_file = open(self.l1_name+'_msi_B11.pkl', 'rb')
             self.msi_ref = pickle.load(pkl_file)
             pkl_file.close()
 
@@ -144,12 +147,10 @@ class cloudFilter(object):
         
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
         plt.imshow(self.prefilter, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
-        plt.savefig('prefilter.png')
-        plt.show()
+        plt.savefig(self.l1_name+'_prefilter.png')
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
         plt.imshow(self.msi_ref, aspect='auto', interpolation='none', alpha=0.5)
-        plt.savefig('l1_vs_msi_filtered_test.png')
-        plt.show()
+        plt.savefig(self.l1_name+'_vs_msi_filtered.png')
 
         return self.prefilter
 
