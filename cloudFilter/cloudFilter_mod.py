@@ -112,6 +112,7 @@ class cloudFilter(object):
         import matplotlib.pyplot as plt
         from sklearn.preprocessing import StandardScaler
         import pickle
+        import sys
         import os
         from scipy import ndimage
 
@@ -146,7 +147,9 @@ class cloudFilter(object):
         self.prefilter = tmp
         
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
-        plt.imshow(self.prefilter, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
+        masked_pixels = np.ma.masked_where(self.prefilter == 0, self.prefilter)
+        #plt.imshow(self.prefilter, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
+        plt.imshow(masked_pixels, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
         plt.savefig(self.l1_name+'_prefilter.png')
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
         plt.imshow(self.msi_ref, aspect='auto', interpolation='none', alpha=0.5)
