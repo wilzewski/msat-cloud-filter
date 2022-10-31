@@ -107,6 +107,21 @@ class cloudFilter(object):
         self.prefilter_model = 0
         self.yymmdd = 20220101
 
+    def remove_clusters(self, prefilter, min_pix_size):
+        import numpy as np
+        from skimage.measure import label
+        # min_pix_size: minimum of connected pixels to be retained as cloud
+        # label connected pixel-areas
+        prefilter, num = label(prefilter, connectivity=2, return_num=True)
+
+        for i in np.arange(1,num+1):
+            n_pix = np.count_nonzero(prefilter == i)
+            if n_pix < min_pix_size:   # remove cloud label if too few pixels
+                prefilter[prefilter == i] = 0
+        prefilter[prefilter != 0] = 1 # reset labels
+
+        return prefilter
+
     def apply_prefilter(self):
         import numpy as np
         import matplotlib.pyplot as plt
@@ -134,7 +149,7 @@ class cloudFilter(object):
 
         self.msi_ref = ndimage.maximum_filter(self.msi_ref, size=(1,200,50))
 
-        X = self.prepare_prefilter_data()
+        X, order = self.prepare_prefilter_data()
         scaler = StandardScaler()
         scaler.fit(X)
         X = scaler.transform(X)
@@ -145,14 +160,31 @@ class cloudFilter(object):
         tmp[self.l1_valid_mask] = pred
         
         self.prefilter = tmp
-        
+
+        # remove small clouds/misclassifications
+        self.prefilter = self.remove_clusters(self.prefilter, 500)
+        # ratio of flagged clouds to total pixels
+        r_flagged = np.sum(self.prefilter)/np.count_nonzero(~np.isnan(self.l1_ref[630,:,:]))
+        print('Fraction of potentially cloudy pixels: ', np.round(r_flagged, 2))
+
+        # if substantial amount of clouds present, check for shadows:
+        #if any(self.prefilter.flatten()):
+        if r_flagged > 0.01:
+            # for now just filter out dark scenes:
+            ind = np.where(np.nanmean(self.l1_ref, axis=0) < 0.1)
+            self.prefilter[ind[0], ind[1]] = 1
+            self.prefilter = self.remove_clusters(self.prefilter, 500)
+            
+        r_flagged = np.sum(self.prefilter)/np.count_nonzero(~np.isnan(self.l1_ref[630,:,:]))
+        print('Fraction of cloudy+shadowy pixels: ', np.round(r_flagged, 2))
+
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
         masked_pixels = np.ma.masked_where(self.prefilter == 0, self.prefilter)
-        #plt.imshow(self.prefilter, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
-        plt.imshow(masked_pixels, aspect='auto', interpolation='none', cmap='binary', alpha=0.5)
+        plt.imshow(masked_pixels, aspect='auto', cmap='autumn', alpha=0.5)
+        plt.show()
         plt.savefig(self.l1_name+'_prefilter.png')
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
-        plt.imshow(self.msi_ref, aspect='auto', interpolation='none', alpha=0.5)
+        plt.imshow(self.msi_ref, aspect='auto', alpha=0.5)
         plt.savefig(self.l1_name+'_vs_msi_filtered.png')
 
         return self.prefilter
@@ -470,8 +502,9 @@ class cloudFilter(object):
         else:
             sorting_order_file = 'sorting_order_MAIR.pkl'
             if sorting_order_file not in os.listdir():
-                # sorting based on clear, decently bright spectrum, sort of random selection
-                order = np.argsort(ref[:,100])
+                # sorting based on decently bright spectrum, random selection, use clear granule!
+                ind = np.where((np.nanmean(ref, axis=0) > 0.3) & (np.nanmean(ref, axis=0) < 0.4))
+                order = np.argsort(ref[:,ind[0][0]])
                 print('Saving sorting order to ', sorting_order_file)
                 pkl_file = open(sorting_order_file, 'wb')
                 pickle.dump(order, pkl_file)
@@ -505,7 +538,7 @@ class cloudFilter(object):
 
             return X, cf
         else:
-            return X
+            return X, order
 
     def spectral_sorting(self, ref, cf):
         # approach inspired by https://doi.org/10.1029/2018GL079286
