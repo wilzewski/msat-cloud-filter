@@ -412,12 +412,14 @@ class cloudFilter(object):
         from sklearn.model_selection import train_test_split
         from sklearn.neural_network import MLPClassifier
         from sklearn.metrics import accuracy_score
+        from sklearn.model_selection import GridSearchCV
+        import sys
         import numpy as np
         import pickle
 
         X, y = self.prepare_prefilter_data()
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=True, train_size=0.95)
 
         # feature scaling so variables have mean=0 and std=1
         scaler = StandardScaler()
@@ -426,8 +428,27 @@ class cloudFilter(object):
         # apply same transformation to test data
         X_test = scaler.transform(X_test)
 
-        model = MLPClassifier(solver='lbfgs', max_iter=600, alpha=1e-5,
-            hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 1 hidden layer
+        #model = MLPClassifier(solver='lbfgs', max_iter=600, alpha=1e-5,
+        #    hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 1 hidden layer
+        model = MLPClassifier(max_iter=800, hidden_layer_sizes=(5,), alpha=1e-7, solver='sgd', random_state=1)
+
+        ## tune model set up
+        #print('Tune model')
+        #parameter_space = {
+        #'hidden_layer_sizes': [(1,), (5,), (10,), (20,)],
+        #'activation': ['logistic', 'relu', 'tanh'],
+        #'solver': ['adam', 'lbfgs', 'sgd'],
+        #'alpha': [1e-7, 1e-6, 1e-5, 1e-4],
+        #'learning_rate': ['constant', 'adaptive']
+        #}
+
+        #clf = GridSearchCV(model, param_grid=parameter_space, n_jobs=-1, cv=10)
+        #clf.fit(X, y)
+
+        #print(clf.cv_results_, '\n')
+        #print(clf.best_estimator_, '\n')
+        #print(clf.best_score_, '\n')
+        #print(clf.best_params_, '\n')
 
         # Train model
         model.fit(X_train, y_train)
@@ -443,6 +464,17 @@ class cloudFilter(object):
         pkl_file.close()
 
         return model
+
+    # Utility function to report best scores
+    def report(self, grid_scores, n_top=3):
+        top_scores = sorted(grid_scores, key=itemgetter(1), reverse=True)[:n_top]
+        for i, score in enumerate(top_scores):
+            print("Model with rank: {0}".format(i + 1))
+            print("Mean validation score: {0:.3f} (std: {1:.3f})".format(
+                  score.mean_validation_score,
+                  np.std(score.cv_validation_scores)))
+            print("Parameters: {0}".format(score.parameters))
+            print("")
 
     def prepare_prefilter_data(self):
         import pickle
