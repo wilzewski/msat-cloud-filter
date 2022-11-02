@@ -4,7 +4,7 @@
 
 class cloudFilter(object):
 
-    def __init__(self, l1, msi, glint=False, osse=False):
+    def __init__(self, l1, msi, l2=None, glint=False, osse=False):
 
         from netCDF4 import Dataset
         from collections import deque
@@ -105,6 +105,7 @@ class cloudFilter(object):
         self.msi_raw = np.zeros(filter_shape)
         self.msi_path = msi
         self.prefilter_model = 0
+        self.prefilter_scaler = 0
         self.yymmdd = 20220101
 
     def remove_clusters(self, prefilter, min_pix_size):
@@ -125,7 +126,7 @@ class cloudFilter(object):
     def apply_prefilter(self):
         import numpy as np
         import matplotlib.pyplot as plt
-        from sklearn.preprocessing import StandardScaler
+        from sklearn.preprocessing import StandardScaler,RobustScaler
         import pickle
         import sys
         import os
@@ -150,9 +151,12 @@ class cloudFilter(object):
         self.msi_ref = ndimage.maximum_filter(self.msi_ref, size=(1,200,50))
 
         X, order = self.prepare_prefilter_data()
-        scaler = StandardScaler()
+
+        #scaler = StandardScaler()
+        scaler = RobustScaler()
         scaler.fit(X)
         X = scaler.transform(X)
+        #X = self.prefilter_scaler.transform(X)
 
         pred = self.prefilter_model.predict(X)
 
@@ -310,17 +314,18 @@ class cloudFilter(object):
 
         # a scaling factor should be applied to make ref physical
         self.msi_raw = final_msi/10000.0
-        r = final_msi
+        
+        #r = final_msi
 
         # normalizing between 0 and 1 based on min/max
-        msi_ref = cv2.normalize(r,np.zeros(r.shape, np.double),0.0,1.0,cv2.NORM_MINMAX)
+        #msi_ref = cv2.normalize(r,np.zeros(r.shape, np.double),0.0,1.0,cv2.NORM_MINMAX)
         # histogram equalization for enhancing image contrast
         #clahe = cv2.createCLAHE(clipLimit = 2.0, tileGridSize=(8,8))
         #self.master = clahe.apply(np.uint8(msi_ref*255))
         # uncomment this to run without contrast enhancement
-        msi_ref = np.uint8(msi_ref*255)
+        #msi_ref = np.uint8(msi_ref*255)
 
-        return msi_ref
+        return self.msi_raw
 
     def cutter(self,rad,lat,lon, l1_lon, l1_lat):
         '''
@@ -383,19 +388,18 @@ class cloudFilter(object):
                      self.cloud_truth, l1_lon, l1_lat, l1_clon, l1_clat = d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7]
                 pkl_file.close()
 
-            print(self.l1_ref.shape)
-
             print('read_msi_clim()')
             self.msi_ref = self.read_msi_clim(l1_lon, l1_lat, l1_clon, l1_clat)
 
             # if model not present:
             if 'prefilter_model.pkl' not in os.listdir():
                 print('build_prefilter_model()')
-                self.prefilter_model = self.build_prefilter_model()
+                self.prefilter_model, self.prefilter_scaler = self.build_prefilter_model()
             else:
                 print('Read prefilter model from prefilter_model.pkl')
                 pkl_file = open('prefilter_model.pkl', 'rb')
-                self.prefilter_model = pickle.load(pkl_file)
+                data = pickle.load(pkl_file)
+                self.prefilter_model, self.prefilter_scaler = data[0], data[1]
                 pkl_file.close()
         else:
             if 'prefilter_model.pkl' not in os.listdir():
@@ -404,33 +408,39 @@ class cloudFilter(object):
             else:
                 print('Read prefilter model from prefilter_model.pkl')
                 pkl_file = open('prefilter_model.pkl', 'rb')
-                self.prefilter_model = pickle.load(pkl_file)
+                data = pickle.load(pkl_file)
+                self.prefilter_model, self.prefilter_scaler = data[0], data[1]
                 pkl_file.close()
 
     def build_prefilter_model(self):
-        from sklearn.preprocessing import StandardScaler
+        from sklearn.preprocessing import StandardScaler, RobustScaler
         from sklearn.model_selection import train_test_split
         from sklearn.neural_network import MLPClassifier
         from sklearn.metrics import accuracy_score
         from sklearn.model_selection import GridSearchCV
+        from sklearn.model_selection import cross_val_score
         import sys
         import numpy as np
         import pickle
 
         X, y = self.prepare_prefilter_data()
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=True, train_size=0.95)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=True)#, train_size=0.95)
 
         # feature scaling so variables have mean=0 and std=1
-        scaler = StandardScaler()
+        #scaler = StandardScaler()
+        scaler = RobustScaler()
         scaler.fit(X_train)  
         X_train = scaler.transform(X_train)  
         # apply same transformation to test data
         X_test = scaler.transform(X_test)
 
-        #model = MLPClassifier(solver='lbfgs', max_iter=600, alpha=1e-5,
-        #    hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 1 hidden layer
-        model = MLPClassifier(max_iter=800, hidden_layer_sizes=(5,), alpha=1e-7, solver='sgd', random_state=1)
+        model = MLPClassifier(solver='lbfgs', max_iter=600, alpha=1e-5,
+            hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 1 hidden layer
+        #model = MLPClassifier(max_iter=800, hidden_layer_sizes=(5,), alpha=1e-7, solver='sgd', random_state=1)
+        #scores = cross_val_score(model, X, y, cv=10)
+        #print(scores)
+        #print("Cross validation scores:\n  %0.2f accuracy with a standard deviation of %0.2f" % (scores.mean(), scores.std()))
 
         ## tune model set up
         #print('Tune model')
@@ -460,10 +470,10 @@ class cloudFilter(object):
         save_file = 'prefilter_model.pkl'
         print('Saving prefilter model to ', save_file)
         pkl_file = open(save_file, 'wb')
-        pickle.dump(model, pkl_file)
+        pickle.dump([model, scaler], pkl_file)
         pkl_file.close()
 
-        return model
+        return model, scaler
 
     # Utility function to report best scores
     def report(self, grid_scores, n_top=3):
