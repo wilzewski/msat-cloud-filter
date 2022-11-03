@@ -425,18 +425,17 @@ class cloudFilter(object):
 
         X, y = self.prepare_prefilter_data()
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=True)#, train_size=0.95)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y)
 
         # feature scaling so variables have mean=0 and std=1
         #scaler = StandardScaler()
         scaler = RobustScaler()
         scaler.fit(X_train)  
         X_train = scaler.transform(X_train)  
-        # apply same transformation to test data
         X_test = scaler.transform(X_test)
 
         model = MLPClassifier(solver='lbfgs', max_iter=600, alpha=1e-5,
-            hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 1 hidden layer
+            hidden_layer_sizes=(10,10), random_state=1)  # 10 neurons, 2 hidden layers
         #model = MLPClassifier(max_iter=800, hidden_layer_sizes=(5,), alpha=1e-7, solver='sgd', random_state=1)
         #scores = cross_val_score(model, X, y, cv=10)
         #print(scores)
