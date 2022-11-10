@@ -185,11 +185,15 @@ class cloudFilter(object):
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
         masked_pixels = np.ma.masked_where(self.prefilter == 0, self.prefilter)
         plt.imshow(masked_pixels, aspect='auto', cmap='autumn', alpha=0.5)
+        plt.xlabel('Along Track Index')
+        plt.ylabel('Across Track Index')
+        plt.savefig(self.l1_name+'_prefilter.png', dpi=300)
         plt.show()
-        plt.savefig(self.l1_name+'_prefilter.png')
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
         plt.imshow(self.msi_ref, aspect='auto', alpha=0.5)
-        plt.savefig(self.l1_name+'_vs_msi_filtered.png')
+        plt.xlabel('Along Track Index')
+        plt.ylabel('Across Track Index')
+        plt.savefig(self.l1_name+'_vs_msi_filtered.png', dpi=300)
 
         return self.prefilter
 
@@ -596,12 +600,43 @@ class cloudFilter(object):
         #fs = 12
         #ax1.set_xlabel('Wavelength / nm', fontsize=fs)
         #ax1.set_title('Simulated Spectrum', fontsize=fs)
-        #ax2.set_title('Sorted by Radiance', fontsize=fs)
+        #ax2.set_title('Sorted by Reflectance', fontsize=fs)
         #ax2.set_xlabel('Spectral Index', fontsize=fs)
-        #ax1.set_ylabel('Radiance / 1e14 photons/s/nm/cm$^2$/sr', fontsize=fs)
+        #ax1.set_ylabel('Reflectance', fontsize=fs)
         #plt.savefig('spectral_sorting_osse.png', dpi=300)
+        #plt.show()
+        #ref_1 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]>0.2 and cf[i]<=0.3]), axis=0)
+        #ref_2 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]>0.3 and cf[i]<=0.4]), axis=0)
+        #ref_3 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]>0.4 and cf[i]<=0.5]), axis=0)
+        #ref_4 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]>0.5 and cf[i]<=0.6]), axis=0)
+        #ref_5 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]>0.6 and cf[i]<=0.7]), axis=0)
+        #ref_6 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]>0.7 and cf[i]<=0.8]), axis=0)
+        #ref_7 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]>0.8 and cf[i]<=0.9]), axis=0)
+        #ref_8 = np.nanmean(np.array([ref[:,i] for i in range(ref.shape[1]) if cf[i]>0.9]), axis=0)
+        #x = np.linspace(0,ref_0.shape[0],ref_0.shape[0])
+        #plt.figure(figsize=(8,5))
+        ##plt.plot(x, self.smooth_curve(x, ref_0[order],5), label='cf=0')
+        ##plt.plot(x, self.smooth_curve(x, ref_1[order],5), label='0.2<cf<=0.3')
+        ##plt.plot(x, self.smooth_curve(x, ref_2[order],5), label='0.3<cf<=0.4')
+        ##plt.plot(x, self.smooth_curve(x, ref_3[order],5), label='0.4<cf<=0.5')
+        ##plt.plot(x, self.smooth_curve(x, ref_4[order],5), label='0.5<cf<=0.6')
+        ##plt.plot(x, self.smooth_curve(x, ref_5[order],5), label='0.6<cf<=0.7')
+        #plt.plot(x, self.smooth_curve(x, ref_6[order],5), label='0.7<cf<=0.8')
+        #plt.plot(x, self.smooth_curve(x, ref_7[order],5), label='0.8<cf<=0.9')
+        #plt.plot(x, self.smooth_curve(x, ref_8[order],5), label='0.9<cf')
+        ##plt.xlim(0,500)
+        #plt.ylabel('Reflectance', fontsize=fs)
+        #plt.xlabel('Spectral Index', fontsize=fs)
+        #plt.title('Sorting order (from clear spectra) applied to cloudy scenes in OSSE')
+        #plt.legend()
+        #plt.savefig('spectral_sorting_osse_cloudy_spectra_sorted_like_clear_ones.png', dpi=300)
         #plt.show();sys.exit()
         return order
+
+    def smooth_curve(self,x,y,o):
+        import numpy as np
+        p = np.polyfit(x,y,o)
+        return np.poly1d(p)(x)
 
     def av_msi_per_l1(self, l1_lon, msi_clim, points, c11, c12, c21, c22, c31, c32, c41, c42):
         # make mask indicating which MSI points lie within a l1 pixel
