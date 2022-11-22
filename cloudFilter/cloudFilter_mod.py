@@ -4,7 +4,7 @@
 
 class cloudFilter(object):
 
-    def __init__(self, l1, msi, l2=None, glint=False, osse=False):
+    def __init__(self, l1, msi, l2_ch4=None, l2_o2=None, l2_h2o=None, glint=False, osse=False):
 
         from netCDF4 import Dataset
         from collections import deque
@@ -94,6 +94,9 @@ class cloudFilter(object):
                          Dataset(self.l1_bundle[0]).dimensions['y'].size)
 
         self.prefilter = np.zeros(filter_shape)
+        self.prefilter_class_ratio = 0
+        self.binary_cloud_fraction_thresh = 0.7
+        self.training_imbalance_thresh = 8   # maximum allowed class imbalance in training data
         self.quality_flag = np.zeros(filter_shape)
         self.postfilter = np.zeros(filter_shape)
         self.l1_ref = np.zeros(filter_shape_ref)
@@ -153,10 +156,10 @@ class cloudFilter(object):
         X, order = self.prepare_prefilter_data()
 
         #scaler = StandardScaler()
-        scaler = RobustScaler()
-        scaler.fit(X)
-        X = scaler.transform(X)
-        #X = self.prefilter_scaler.transform(X)
+        #scaler = RobustScaler()
+        #scaler.fit(X)
+        #X = scaler.transform(X)
+        X = self.prefilter_scaler.transform(X)
 
         pred = self.prefilter_model.predict(X)
 
@@ -398,6 +401,7 @@ class cloudFilter(object):
             # if model not present:
             if 'prefilter_model.pkl' not in os.listdir():
                 print('build_prefilter_model()')
+                print('Classification threshold in OSSE is', self.binary_cloud_fraction_thresh)
                 self.prefilter_model, self.prefilter_scaler = self.build_prefilter_model()
             else:
                 print('Read prefilter model from prefilter_model.pkl')
@@ -420,16 +424,21 @@ class cloudFilter(object):
         from sklearn.preprocessing import StandardScaler, RobustScaler
         from sklearn.model_selection import train_test_split
         from sklearn.neural_network import MLPClassifier
-        from sklearn.metrics import accuracy_score
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
         from sklearn.model_selection import GridSearchCV
         from sklearn.model_selection import cross_val_score
         import sys
         import numpy as np
         import pickle
+        import matplotlib.pyplot as plt
 
         X, y = self.prepare_prefilter_data()
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, stratify=y, test_size=0.1, random_state=1)
+
+        # downsample if necessary
+        if int(np.round(1/self.prefilter_class_ratio,0)) > self.training_imbalance_thresh:
+            X_train, y_train = self.downsample(X_train, y_train, clear_cloudy_ratio = self.training_imbalance_thresh)
 
         # feature scaling so variables have mean=0 and std=1
         #scaler = StandardScaler()
@@ -438,8 +447,8 @@ class cloudFilter(object):
         X_train = scaler.transform(X_train)  
         X_test = scaler.transform(X_test)
 
-        model = MLPClassifier(solver='lbfgs', max_iter=600, alpha=1e-5,
-            hidden_layer_sizes=(10,10), random_state=1)  # 10 neurons, 2 hidden layers
+        model = MLPClassifier(max_iter=2000, alpha=1e-4, verbose=True,
+            hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 2 hidden layers
         #model = MLPClassifier(max_iter=800, hidden_layer_sizes=(5,), alpha=1e-7, solver='sgd', random_state=1)
         #scores = cross_val_score(model, X, y, cv=10)
         #print(scores)
@@ -448,11 +457,12 @@ class cloudFilter(object):
         ## tune model set up
         #print('Tune model')
         #parameter_space = {
-        #'hidden_layer_sizes': [(1,), (5,), (10,), (20,)],
-        #'activation': ['logistic', 'relu', 'tanh'],
-        #'solver': ['adam', 'lbfgs', 'sgd'],
-        #'alpha': [1e-7, 1e-6, 1e-5, 1e-4],
-        #'learning_rate': ['constant', 'adaptive']
+        #'hidden_layer_sizes': [(10,), (15,), (20,), (25,)],
+        #'max_iter': [1000, 2000, 3000, 4000]
+        ##'activation': ['logistic', 'relu', 'tanh'],
+        ##'solver': ['adam', 'lbfgs', 'sgd'],
+        ##'alpha': [1e-7, 1e-6, 1e-5, 1e-4],
+        ##'learning_rate': ['constant', 'adaptive']
         #}
 
         #clf = GridSearchCV(model, param_grid=parameter_space, n_jobs=-1, cv=10)
@@ -462,13 +472,42 @@ class cloudFilter(object):
         #print(clf.best_estimator_, '\n')
         #print(clf.best_score_, '\n')
         #print(clf.best_params_, '\n')
+        #sys.exit()
 
         # Train model
         model.fit(X_train, y_train)
         # Predict
         pred = model.predict(X_test)
-        print('Accuracy: ', np.round(accuracy_score(y_test, pred),2))
+        print(pred)
+        #print('Accuracy: ', np.round(accuracy_score(y_test, pred),2))
+        print('Accuracy: ', np.round(balanced_accuracy_score(y_test, pred),2))
 
+        correct_clear = np.where((y_test==0) & (pred==0))
+        correct_cloud = np.where((y_test==1) & (pred==1))
+        false_clear = np.where((y_test==1) & (pred==0))
+        false_cloud = np.where((y_test==0) & (pred==1))
+
+        plt.scatter(X_test[:,3][correct_clear], X_test[:,1][correct_clear], label='Correct prediction: clear', color='green', alpha=0.7)
+        plt.scatter(X_test[:,3][correct_cloud], X_test[:,1][correct_cloud], label='Correct prediction: cloud', color='lime', marker='s', alpha=0.6)
+
+        plt.scatter(X_test[:,3][false_clear], X_test[:,1][false_clear], label='False prediction: clear', color='red', alpha=0.4)
+        plt.scatter(X_test[:,3][false_cloud], X_test[:,1][false_cloud], label='False prediction: cloud', color='pink', marker='s', alpha=0.3)
+        plt.legend()
+        plt.xlabel('scaled continuum reflectance')
+        plt.ylabel('scaled MSI reflectance')
+        plt.savefig('prefilter_skill1.png', dpi=300)
+        plt.show()
+
+        plt.scatter(X_train[:,10], y_train, label='train')
+        plt.scatter(X_test[:,10], y_test, label='test')
+        plt.scatter(X_test[:,10], pred, facecolors='none', edgecolor='green', label='model')
+        plt.legend()
+        plt.xlabel('scaled continuum reflectance')
+        plt.ylabel('Cloud flag')
+        plt.savefig('prefilter_skill2.png', dpi=300)
+        plt.show()
+
+        sys.exit()
         # save model
         save_file = 'prefilter_model.pkl'
         print('Saving prefilter model to ', save_file)
@@ -495,6 +534,11 @@ class cloudFilter(object):
         import sys
         import matplotlib.pyplot as plt
         import os
+        import warnings
+        warnings.filterwarnings("ignore")
+        # binary_cloud_fraction_thresh sets the OSSE cloud fraction value above which the 
+        # model considers a pixel "cloudy" (cloud fractions below are considered "clear")
+
         if self.l1istopdir:
             # remove orbit dimension from data
             self.l1_sza = self.l1_sza.reshape(-1, self.l1_sza.shape[2])
@@ -564,10 +608,10 @@ class cloudFilter(object):
         ref = ref[order, :].T
         X = np.stack([sza, msi], axis=1)
         # append full, sorted reflectance spectra
-        # X = np.hstack((X, ref))
+        #X = np.hstack((X, ref))
 
         # alternatively, append average sorted spectra:
-        nchannels = 5
+        nchannels = 10
         r=np.zeros((ref.shape[0],nchannels))
         l = int(ref.shape[1]/nchannels)
         for i in range(r.shape[0]):
@@ -577,13 +621,48 @@ class cloudFilter(object):
 
         if self.data_type == 0:
             # make binary label
-            thresh = 0.9
+            thresh = self.binary_cloud_fraction_thresh
             cf[cf>thresh] = 1
             cf[cf<=thresh] = 0
-
+            self.prefilter_class_ratio = len(cf[cf==1]) / len(cf[cf==0])
+            print('clear : cloud ratio is ~ ', int(np.round(1/self.prefilter_class_ratio,0)), ': 1')
             return X, cf
         else:
             return X, order
+
+    def downsample(self, X, cf, clear_cloudy_ratio):
+        # remove data from the majority cloud fraction class to match
+        # the required clear_cloud_ratio
+        # return downsampled X and cf
+        import numpy as np
+
+        print('Downsampling majority class so ratio is ', clear_cloudy_ratio, ': 1')
+
+        if self.prefilter_class_ratio > 1:
+            majority_class = 1 # more clouds
+            minority_class = 0
+        else:
+            majority_class = 0 # more clear scenes
+            minority_class = 1
+
+        N_majority = len(cf[cf==majority_class])
+        N_minority = len(cf[cf==minority_class])
+        # length of downsampled majority class
+        if self.prefilter_class_ratio > 1:
+            N_majority_ds = N_minority / clear_cloudy_ratio
+        else:
+            N_majority_ds = N_minority * clear_cloudy_ratio
+
+        ind_major = np.where(cf==majority_class)[0]
+        ind_minor = np.where(cf==minority_class)[0]
+
+        # remove random data from majority class:
+        ind_major_ds = np.random.choice(ind_major, size=N_majority_ds, replace=False)
+
+        cf_ds = np.hstack((cf[ind_minor], cf[ind_major_ds]))
+        X_ds = np.vstack((X[ind_minor,:], X[ind_major_ds,:]))
+
+        return X_ds, cf_ds
 
     def spectral_sorting(self, ref, cf):
         # approach inspired by https://doi.org/10.1029/2018GL079286
