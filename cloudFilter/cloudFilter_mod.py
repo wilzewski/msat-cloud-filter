@@ -94,9 +94,9 @@ class cloudFilter(object):
                          Dataset(self.l1_bundle[0]).dimensions['y'].size)
 
         self.prefilter = np.zeros(filter_shape)
-        self.prefilter_class_ratio = 0
-        self.binary_cloud_fraction_thresh = 0.7
-        self.training_imbalance_thresh = 8   # maximum allowed class imbalance in training data
+        self.prefilter_class_ratio = 0   # ratio cloudy/clear scenes in osse
+        self.binary_cloud_fraction_thresh = 0.1
+        self.training_imbalance_thresh = 2   # maximum allowed class imbalance in training data
         self.quality_flag = np.zeros(filter_shape)
         self.postfilter = np.zeros(filter_shape)
         self.l1_ref = np.zeros(filter_shape_ref)
@@ -156,10 +156,10 @@ class cloudFilter(object):
         X, order = self.prepare_prefilter_data()
 
         #scaler = StandardScaler()
-        #scaler = RobustScaler()
-        #scaler.fit(X)
-        #X = scaler.transform(X)
-        X = self.prefilter_scaler.transform(X)
+        scaler = RobustScaler()
+        scaler.fit(X)
+        X = scaler.transform(X)
+        #X = self.prefilter_scaler.transform(X)
 
         pred = self.prefilter_model.predict(X)
 
@@ -176,16 +176,17 @@ class cloudFilter(object):
 
         # if substantial amount of clouds present, check for shadows:
         #if any(self.prefilter.flatten()):
-        if r_flagged > 0.01:
-            # for now just filter out dark scenes:
-            ind = np.where(np.nanmean(self.l1_ref, axis=0) < 0.1)
-            self.prefilter[ind[0], ind[1]] = 1
-            self.prefilter = self.remove_clusters(self.prefilter, 500)
+        #if r_flagged > 0.01:
+        #    # for now just filter out dark scenes:
+        #    ind = np.where(np.nanmean(self.l1_ref, axis=0) < 0.1)
+        #    self.prefilter[ind[0], ind[1]] = 1
+        #    self.prefilter = self.remove_clusters(self.prefilter, 500)
             
         r_flagged = np.sum(self.prefilter)/np.count_nonzero(~np.isnan(self.l1_ref[630,:,:]))
         print('Fraction of cloudy+shadowy pixels: ', np.round(r_flagged, 2))
 
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
+        cb = plt.colorbar();cb.set_label('Reflectance')
         masked_pixels = np.ma.masked_where(self.prefilter == 0, self.prefilter)
         plt.imshow(masked_pixels, aspect='auto', cmap='autumn', alpha=0.5)
         plt.xlabel('Along Track Index')
@@ -193,6 +194,7 @@ class cloudFilter(object):
         plt.savefig(self.l1_name+'_prefilter.png', dpi=300)
         plt.show()
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
+        cb = plt.colorbar();cb.set_label('Reflectance')
         plt.imshow(self.msi_ref, aspect='auto', alpha=0.5)
         plt.xlabel('Along Track Index')
         plt.ylabel('Across Track Index')
@@ -447,8 +449,9 @@ class cloudFilter(object):
         X_train = scaler.transform(X_train)  
         X_test = scaler.transform(X_test)
 
-        model = MLPClassifier(max_iter=2000, alpha=1e-4, verbose=True,
-            hidden_layer_sizes=(10,), random_state=1)  # 10 neurons, 2 hidden layers
+        model = MLPClassifier(max_iter=2000, alpha=1e-5, verbose=True,
+            hidden_layer_sizes=(10,10), activation='tanh', 
+            learning_rate='constant', solver='lbfgs', random_state=1)
         #model = MLPClassifier(max_iter=800, hidden_layer_sizes=(5,), alpha=1e-7, solver='sgd', random_state=1)
         #scores = cross_val_score(model, X, y, cv=10)
         #print(scores)
@@ -457,12 +460,12 @@ class cloudFilter(object):
         ## tune model set up
         #print('Tune model')
         #parameter_space = {
-        #'hidden_layer_sizes': [(10,), (15,), (20,), (25,)],
-        #'max_iter': [1000, 2000, 3000, 4000]
-        ##'activation': ['logistic', 'relu', 'tanh'],
-        ##'solver': ['adam', 'lbfgs', 'sgd'],
-        ##'alpha': [1e-7, 1e-6, 1e-5, 1e-4],
-        ##'learning_rate': ['constant', 'adaptive']
+        #'hidden_layer_sizes': [(10,10,), (15,), (20,10,), (25,)],
+        #'max_iter': [2000, 3000],
+        #'activation': ['logistic', 'relu', 'tanh'],
+        #'solver': ['adam', 'lbfgs', 'sgd'],
+        #'alpha': [1e-7, 1e-6, 1e-5, 1e-4],
+        #'learning_rate': ['constant', 'adaptive']
         #}
 
         #clf = GridSearchCV(model, param_grid=parameter_space, n_jobs=-1, cv=10)
@@ -491,7 +494,7 @@ class cloudFilter(object):
         plt.scatter(X_test[:,3][correct_cloud], X_test[:,1][correct_cloud], label='Correct prediction: cloud', color='lime', marker='s', alpha=0.6)
 
         plt.scatter(X_test[:,3][false_clear], X_test[:,1][false_clear], label='False prediction: clear', color='red', alpha=0.4)
-        plt.scatter(X_test[:,3][false_cloud], X_test[:,1][false_cloud], label='False prediction: cloud', color='pink', marker='s', alpha=0.3)
+        plt.scatter(X_test[:,3][false_cloud], X_test[:,1][false_cloud], label='False prediction: cloud', color='deeppink', marker='s', alpha=0.3)
         plt.legend()
         plt.xlabel('scaled continuum reflectance')
         plt.ylabel('scaled MSI reflectance')
@@ -507,7 +510,7 @@ class cloudFilter(object):
         plt.savefig('prefilter_skill2.png', dpi=300)
         plt.show()
 
-        sys.exit()
+        #sys.exit()
         # save model
         save_file = 'prefilter_model.pkl'
         print('Saving prefilter model to ', save_file)
