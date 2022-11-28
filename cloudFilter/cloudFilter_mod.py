@@ -19,6 +19,7 @@ class cloudFilter(object):
             osse (bool): synthetic data (True) or 
                          MAIR/MSAT measurements (False)
             l1 (string): path to L1 data file or data directory
+            l2_* (string): path to L2 data file or data directory for respective retrieval
             msi (string): path to MSI data
             glint (bool): ocean glint?
             truth_path (string): path to OSSE truth data dir
@@ -109,7 +110,223 @@ class cloudFilter(object):
         self.msi_path = msi
         self.prefilter_model = 0
         self.prefilter_scaler = 0
+        self.postfilter_model = 0
+        self.postfilter_scaler = 0
         self.yymmdd = 20220101
+
+    def prior_vcd_filter(self, vcd_retr, vcd_prior):
+        return vcd_prior - vcd_retr
+    
+    def vcd_diff_filter(self, vcd_retr1, vcd_retr2):
+        #return np.abs(1 - vcd_retr1/vcd_retr2)
+        return vcd_retr1/vcd_retr2
+    
+    def msi_filter(self, l1_ref, msi_ref):
+        return l1_ref - msi_ref
+
+    def load_svm_training_data(self):
+        import numpy as np
+        import scipy.io as sio
+        import os
+
+        mat_path = '/scratch/sao_atmos/jwilzews/DATA/OSSE/mat_from_Amir/'
+
+        # variables contained in msi_clim['MSI_clim'], true_cf['Z'], ch4_ref['ref_ch4s_land']
+        true_cf = sio.loadmat(os.path.join(mat_path, 'true_cf.mat'))
+        ch4 = sio.loadmat(os.path.join(mat_path, 'CH4_VCD.mat'))
+        co2 = sio.loadmat(os.path.join(mat_path, 'CO2_VCD.mat'))
+        h2o = sio.loadmat(os.path.join(mat_path, 'H2O_VCD.mat'))
+        msi_clim = sio.loadmat(os.path.join(mat_path, 'msi_clim_global_osse.mat'))
+        ch4_ref = sio.loadmat(os.path.join(mat_path, 'truth_ref_ch4_ocean_land.mat'))
+    
+        co2_vcd_prior = co2['CO2_true']
+        co2_vcd_retr = co2['CO2_ret']
+    
+        ch4_vcd_prior = ch4['CH4_true']
+        ch4_vcd_retr = ch4['CH4_ret']
+    
+        h2o_retr_1 = h2o['H2O_ret_ch4']
+        h2o_retr_2 = h2o['H2O_ret_o2']
+    
+        # add zero cloud fraction to variable where there are nans:
+        true_cf = np.nan_to_num(true_cf['Z'], copy=True, nan=0.0, posinf=None, neginf=None)
+    
+        ch4_filter = self.prior_vcd_filter(ch4_vcd_retr, ch4_vcd_prior)
+        co2_filter = self.prior_vcd_filter(co2_vcd_retr, co2_vcd_prior)
+        h2o_diff_filter = self.vcd_diff_filter(h2o_retr_1, h2o_retr_2)
+        ref_filter = self.msi_filter(ch4_ref['ref_ch4s_land'], msi_clim['MSI_clim'])
+    
+        return co2_filter.flatten()/1e21, ch4_filter.flatten()/1e21, ref_filter.flatten(), h2o_diff_filter.flatten(), true_cf.flatten()
+
+    def get_filter(self):
+        import numpy as np
+        from sklearn import svm
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import accuracy_score, balanced_accuracy_score
+        from sklearn import preprocessing
+        import joblib
+
+        import sys
+        import os
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        import matplotlib as mpl
+
+        if self.data_type == 0:  # if osse data load training data and get svm model
+
+            v1, v2, v3, v4, y = self.load_svm_training_data()
+            # remove nans:
+            y = y[~np.isnan(v1)]
+            v4 = v4[~np.isnan(v1)]
+            v3 = v3[~np.isnan(v1)]
+            v1 = v1[~np.isnan(v1)]
+            v2 = v2[~np.isnan(v2)]
+
+            if len(v1)!= len(v2) or len(v1)!=len(v3) or len(v1)!=len(y) or len(v2)!=len(v3) or len(v4)!=len(v1):
+                print('array length mismatch')
+                sys.exit()
+            if np.isnan(v3).sum()>0 or np.isnan(v1).sum()>0 or np.isnan(v2).sum()>0 or np.isnan(v4).sum()>0:
+                print('nan present in array')
+                sys.exit()
+
+            # for speed-up and testing:
+            v4=v4[22100:30200]
+            v3=v3[22100:30200]
+            v1=v1[22100:30200]
+            v2=v2[22100:30200]
+            y = y[22100:30200]
+            full_colors = y
+            print('Input data dim:', len(v1))
+
+            # feature matrix
+            #X = np.array([[v1[i], v2[i], v3[i], v4[i]] for i in range(len(v1))])
+            X = np.array([[v1[i], v3[i]] for i in range(len(v1))])
+
+            # scale X so variables have mean=0 and std=1
+            #scaler = preprocessing.PowerTransformer(method="yeo-johnson").fit(X)
+            scaler = preprocessing.RobustScaler().fit(X)
+            X = scaler.transform(X)
+
+            for i in X.T:
+                print(np.round(np.nanmean(i),2), np.round(np.nanstd(i),2),
+                         np.round(np.nanmin(i),2), np.round(np.nanmax(i),2))
+
+            # target
+            # needs to be integer values:
+            y = np.array((np.round(y*100,0)).astype(float)) # this makes 100 classes
+            # make two classes, cloudy = 1, clear = 0
+            for i in range(len(y)):
+                if y[i]<0.01:
+                    y[i]=float(0)
+                else:
+                    y[i]=float(1)
+
+            n_sample = len(X)
+
+            X_train, X_test, y_train, y_test = train_test_split(X, y)
+
+            # classifier
+            gamma=1
+            clf = svm.SVC(kernel='rbf', gamma=gamma)#, class_weight="balanced")
+
+            # Fit Data
+            clf.fit(X_train, y_train)
+
+            # Predict labels for test data
+            clf_pred = clf.predict(X_test)
+            print('Accuracy: ', np.round(balanced_accuracy_score(y_test, clf_pred),2))
+
+            # save support vectors
+            print('Saving Support Vectors to svm_model.pkl')
+            joblib.dump([clf, scaler], 'svm_model.pkl')
+        
+            do_plots = False
+            if do_plots:
+                # plot stuff
+                plt.figure()
+                plt.scatter(
+                    X[:, 0], X[:, 1], c=y, zorder=10, cmap=plt.cm.Paired_r, edgecolor="k", s=20
+                )
+                ## Circle out the test data
+                #plt.scatter(
+                #    X_test[:, 0], X_test[:, 1], s=10, facecolors="black", zorder=10, edgecolor="k"
+                #)
+
+                plt.axis("tight")
+                x_min = X[:, 0].min()
+                x_max = X[:, 0].max()
+                y_min = X[:, 1].min()
+                y_max = X[:, 1].max()
+
+                XX, YY = np.mgrid[x_min:x_max:200j, y_min:y_max:200j]
+                Z = clf.decision_function(np.c_[XX.ravel(), YY.ravel()])
+                minZ, maxZ = min(Z), max(Z)
+
+                # Put the result into a color plot
+                Z = Z.reshape(XX.shape)
+
+                plt.pcolormesh(XX, YY, Z>0, cmap=plt.cm.Paired_r)
+                plt.contour(
+                    XX,
+                    YY,
+                    Z,
+                    colors=["k", "k", "k"],
+                    linestyles=["--", "-", "--"],
+                    levels=[-0.5,0, 0.5],
+                )
+                plt.ylabel('L1 Refl - MSI Refl [Normalized]')
+                plt.xlabel('CO2 VCD Prior - Retr [Normalized]')
+                #plt.ylabel('CH4 VCD Prior - Retr [Normalized]')
+                #plt.ylabel('H2O (CH4) / H2O (O2) [Normalized]')
+                plt.title('Cloud Fraction Distribution in Filter Space\ngamma='+str(gamma))
+                #plt.savefig('2d_ch4-vs-msi.png')
+                plt.show()
+
+                f, (ax1, ax2, ax3) = plt.subplots(3,1, figsize=(7,10), sharex=True)
+
+                ymin, ymax = -1,1
+                xmin, xmax = -1,1
+
+                cmap=mpl.cm.viridis
+                cmap.set_under('red')
+
+                sc1 = ax1.scatter(X[:,0], X[:,1], alpha=0.5, c=full_colors, cmap=cmap, vmin=0.01)
+                self.add_cbar_title_axis_extend_min(f, ax1, sc1, 'True Cloud Fraction', '')
+                ax1.set_title('Truth')
+
+                cmap=mpl.colors.ListedColormap(['red', 'green'])
+
+                sc2 = ax2.scatter(X_train[:,0],X_train[:,1], alpha=0.5,c=y_train, cmap=cmap)
+                ax2.set_ylabel('L1 Refl - MSI Refl [Normalized]')
+                #ax2.set_ylabel('CH4 VCD Prior - Retr [Normalized]')
+                #ax2.set_ylabel('H2O (CH4) / H2O (O2) [Normalized]')
+                self.add_cbar_title_axis_binary(f, ax2, sc2, 'Clear', 'Cloudy', 'Training Data')
+
+                sc3 = ax3.scatter(X_test[:,0],X_test[:,1], alpha=0.5,c=clf_pred, cmap=cmap)
+                #ax3.set_xlabel('CH4 VCD Prior - Retr [Normalized]')
+                ax3.set_xlabel('CO2 VCD Prior - Retr [Normalized]')
+                self.add_cbar_title_axis_binary(f, ax3, sc3, 'Clear', 'Cloudy', 'Test Data - SVM Classification')
+                #ax3.text(2, -0.4, 'Accuracy: '+str(np.round(accuracy_score(y_test, clf_pred),2)))
+                ax3.text(-3, 2, 'Accuracy: '+str(np.round(accuracy_score(y_test, clf_pred),2)))
+                #plt.savefig('trainig_ch4_msi.png')
+                plt.show()
+                
+        else: # load model and apply to L2 data 
+             
+            # read support vectors
+            print('Reading Support Vectors from svm_model.pkl')
+            self.postfilter_model = joblib.load('svm_model.pkl')[0]
+            self.postfilter_scaler = joblib.load('svm_model.pkl')[1]
+       
+    def apply_filter(self, approach=None):
+        print('apply_filter')
+        #read_l1()
+        #read_msi()
+        #read_l2()
+        #interpolate_all_l2_to_ch4grid()
+
+         
+
 
     def remove_clusters(self, prefilter, min_pix_size):
         import numpy as np
@@ -1201,4 +1418,27 @@ class cloudFilter(object):
 
         return np.array(cloud_fraction).squeeze()
 
+    # helper fuctions for plotting
+    def add_cbar_title_axis(self, f, ax, im, label, title):
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes('right', size='1%', pad=0.05)
+        f.colorbar(im, cax=cax, orientation='vertical', label=label)
+        ax.set_title(title)
+    
+    def add_cbar_title_axis_binary(self, f, ax, im, label1, label2, title):
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes('right', size='1%', pad=0.05)
+        cbar = f.colorbar(im, cax=cax, orientation='vertical', label='', ticks=[0, 1])
+        cbar.ax.set_yticklabels([label1, label2])
+        ax.set_title(title)
+    
+    
+    def add_cbar_title_axis_extend_min(self, f, ax, im, label, title):
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes('right', size='1%', pad=0.05)
+        f.colorbar(im, cax=cax, orientation='vertical', label=label, extend='min')
+        ax.set_title(title)
 
