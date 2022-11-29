@@ -319,9 +319,29 @@ class cloudFilter(object):
             self.postfilter_scaler = joblib.load('svm_model.pkl')[1]
        
     def apply_filter(self, approach=None):
+        import os
+        import sys
+
         print('apply_filter')
-        #read_l1()
-        #read_msi()
+        print('read_l1()')
+        self.l1_sza, self.l1_ref, l1_lon, l1_lat = self.read_l1()
+        print(self.l1_sza, self.l1_ref, l1_lon, l1_lat);sys.exit()
+
+        print('read_msi()')
+        if self.l1_name+'_msi_B11.pkl' not in os.listdir():
+            print('read_msi_B11()')
+            self.msi_ref = self.read_msi_B11(l1_lon, l1_lat)
+
+            pkl_file = open(self.l1_name+'_msi_B11.pkl', 'wb')
+            pickle.dump(self.msi_ref, pkl_file)
+            pkl_file.close()
+        else:
+            print('read msi_ref from file')
+            pkl_file = open(self.l1_name+'_msi_B11.pkl', 'rb')
+            self.msi_ref = pickle.load(pkl_file)
+            pkl_file.close()
+
+        self.msi_ref = ndimage.maximum_filter(self.msi_ref, size=(1,200,50))
         #read_l2()
         #interpolate_all_l2_to_ch4grid()
 
@@ -1164,6 +1184,7 @@ class cloudFilter(object):
 
         else:
             msi_ref = np.zeros(self.prefilter.shape)
+            print('no msi reader for measurement data available');sys.exit()
             # TODO implement msi reader for measurement data
 
         return msi_ref
@@ -1174,7 +1195,7 @@ class cloudFilter(object):
         import sys
         import numpy as np
         import ephem
-        import datetime
+        from datetime import datetime, timedelta
 
         sza, alb, lon, lat, xch4_true, cf,\
                  l1_ref, clon, clat, yyyymmdd = [],[],[],[],[],[],[],[],[],[]
@@ -1385,8 +1406,16 @@ class cloudFilter(object):
                     l1_ref.append( np.pi * rad\
                                    / (np.cos(np.pi * sza_tmp / 180.) * I0_CH4))
 
-                #else:  this is a L1B file
-                # TODO add reader
+                else:  # this is a L1B file
+                    lon.append(d['Geolocation/Longitude'])
+                    lat.append(d['Geolocation/Latitude'])
+                    sza.append(d['Geolocation/SolarZenithAngle'])
+                    l1_ref.append(d['Band1/Radiance'])
+                    # L1B time is seconds since 1985-01-01
+                    t0 = datetime(1985, 1, 1)
+                    # just take median time, this is only to approximate MSI
+                    time = t0+timedelta(hours=np.median(d['Geolocation/Time']))
+                    yyyymmdd = int(time.strftime('%Y%m%d'))
 
             self.yyyymmdd = np.median(yyyymmdd)
             return np.array(sza), np.array(l1_ref), np.array(lon), np.array(lat)
