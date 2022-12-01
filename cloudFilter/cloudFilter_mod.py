@@ -406,7 +406,7 @@ class cloudFilter(object):
         idx = self.find_psurf_in_state_vector(l2_o2['SpecFitDiagnostics/APosterioriState'])
         o2_psrf = l2_o2["SpecFitDiagnostics"]["APosterioriState"][idx, :, :]
         o2_psrf0 = l2_o2["SpecFitDiagnostics"]["APrioriState"][idx, :, :]
-        dp = o2_psrf - o2_psrf0
+        self.dp = o2_psrf - o2_psrf0
 
     def find_psurf_in_state_vector(self, statevector):
         # statevector is netCDF4 variable from L2
