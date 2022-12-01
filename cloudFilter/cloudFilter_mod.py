@@ -93,12 +93,30 @@ class cloudFilter(object):
             filter_shape_ref = (Dataset(self.l1_bundle[0]).dimensions['w1'].size,
                          Dataset(self.l1_bundle[0]).dimensions['x'].size,
                          Dataset(self.l1_bundle[0]).dimensions['y'].size)
+            if l2_ch4 is not None or l2_o2 is not None or l2_h2o is not None:
+                # check all l2 paths are given
+                if None in (l2_ch4, l2_o2, l2_h2o):
+                    print('Provide all L2 retrieval paths (O2, H2O, CH4-CO2)');sys.exit()
+
+                self.o2path = l2_o2
+                self.ch4path = l2_ch4
+                self.h2opath = l2_h2o
+                self.ch4 = np.zeros(filter_shape)
+                self.co2 = np.zeros(filter_shape)
+                self.dp = np.zeros(filter_shape)
+                self.h2o1 = np.zeros(filter_shape)
+                self.h2o2 = np.zeros(filter_shape)
+                self.ch4_a = np.zeros(filter_shape)
+                self.co2_a = np.zeros(filter_shape)
+                self.rms = np.zeros(filter_shape)
+
+               
 
         self.prefilter = np.zeros(filter_shape)
         self.prefilter_class_ratio = 0   # ratio cloudy/clear scenes in osse
         self.binary_cloud_fraction_thresh = 0.1
         self.training_imbalance_thresh = 2   # maximum allowed class imbalance in training data
-        self.quality_flag = np.zeros(filter_shape)
+        self.quality_flag = np.zeros(filter_shape)   # TODO
         self.postfilter = np.zeros(filter_shape)
         self.l1_ref = np.zeros(filter_shape_ref)
         self.l1_valid_mask = np.zeros(self.l1_ref.shape)
@@ -321,11 +339,13 @@ class cloudFilter(object):
     def apply_filter(self, approach=None):
         import os
         import sys
+        import pickle
+        import matplotlib.pyplot as plt
+        from scipy import ndimage
 
         print('apply_filter')
         print('read_l1()')
         self.l1_sza, self.l1_ref, l1_lon, l1_lat = self.read_l1()
-        print(self.l1_sza, self.l1_ref, l1_lon, l1_lat);sys.exit()
 
         print('read_msi()')
         if self.l1_name+'_msi_B11.pkl' not in os.listdir():
@@ -341,12 +361,60 @@ class cloudFilter(object):
             self.msi_ref = pickle.load(pkl_file)
             pkl_file.close()
 
+        #plt.subplot(311)
+        #plt.title('L1B reflectance')
+        #plt.imshow(self.l1_ref[0,630,:,:], vmin=0, vmax=1, aspect='auto')
+        #plt.subplot(312)
+        #plt.title('MSI reflectance')
+        #plt.imshow(self.msi_ref[0,:,:], vmin=0, vmax=1, aspect='auto')
+
         self.msi_ref = ndimage.maximum_filter(self.msi_ref, size=(1,200,50))
-        #read_l2()
+
+        #plt.subplot(313)
+        #plt.title('Smoothed MSI reflectance')
+        #plt.imshow(self.msi_ref[0,:,:], vmin=0, vmax=1, aspect='auto')
+        #plt.tight_layout()
+        #plt.savefig('l1b_msi_offset.png', dpi=300)
+        #plt.show()
+
+        print('read_l2()')
+        self.read_l2()
+
+        print('interpolate to common grid')
         #interpolate_all_l2_to_ch4grid()
 
-         
+    def read_l2(self):     
+        import netCDF4 as nc
+        import numpy as np
+        import sys
+        import warnings
+        warnings.filterwarnings("ignore")
+        
+        l2_h2o = nc.Dataset(self.h2opath)
+        l2_o2 = nc.Dataset(self.o2path)
+        l2_ch4 = nc.Dataset(self.ch4path)
 
+        self.ch4 = np.sum(np.array(l2_ch4['Posteriori_Profile/CH4_GasMixingRatio']) * np.array(l2_ch4['Posteriori_Profile/AirPartialColumn']), axis=0)
+        self.co2 = np.sum(np.array(l2_ch4['Posteriori_Profile/CO2_GasMixingRatio']) * np.array(l2_ch4['Posteriori_Profile/AirPartialColumn']), axis=0)
+        self.h2o1 = np.sum(np.array(l2_ch4['Posteriori_Profile/H2O_GasMixingRatio']) * np.array(l2_ch4['Posteriori_Profile/AirPartialColumn']), axis=0)
+        self.ch4_a = np.sum(np.array(l2_ch4['Profile/CH4_GasMixingRatio']) * np.array(l2_ch4['Profile/AirPartialColumn']), axis=0)
+        self.co2_a = np.sum(np.array(l2_ch4['Profile/CO2_GasMixingRatio']) * np.array(l2_ch4['Profile/AirPartialColumn']), axis=0)
+        self.rms = np.array(l2_ch4['SpecFitDiagnostics/FitResidualRMS']).squeeze().T
+
+        self.h2o2 = np.sum(np.array(l2_h2o['Posteriori_Profile/H2O_GasMixingRatio']) * np.array(l2_ch4['Posteriori_Profile/AirPartialColumn']), axis=0)
+
+        idx = self.find_psurf_in_state_vector(l2_o2['SpecFitDiagnostics/APosterioriState'])
+        o2_psrf = l2_o2["SpecFitDiagnostics"]["APosterioriState"][idx, :, :]
+        o2_psrf0 = l2_o2["SpecFitDiagnostics"]["APrioriState"][idx, :, :]
+        dp = o2_psrf - o2_psrf0
+
+    def find_psurf_in_state_vector(self, statevector):
+        # statevector is netCDF4 variable from L2
+        # 'SpecFitDiagnostics/APosterioriState'
+        for name in statevector.ncattrs():
+            if getattr(statevector, name)=='SurfacePressure':
+                idx = name.split('SubStateName_')[1].split()[0]
+        return int(idx)-1
 
     def remove_clusters(self, prefilter, min_pix_size):
         import numpy as np
@@ -388,6 +456,7 @@ class cloudFilter(object):
             self.msi_ref = pickle.load(pkl_file)
             pkl_file.close()
 
+        # TODO this needs to be updated so higher reflectances are dominant
         self.msi_ref = ndimage.maximum_filter(self.msi_ref, size=(1,200,50))
 
         X, order = self.prepare_prefilter_data()
@@ -1406,18 +1475,28 @@ class cloudFilter(object):
                     l1_ref.append( np.pi * rad\
                                    / (np.cos(np.pi * sza_tmp / 180.) * I0_CH4))
 
-                else:  # this is a L1B file
-                    lon.append(d['Geolocation/Longitude'])
-                    lat.append(d['Geolocation/Latitude'])
-                    sza.append(d['Geolocation/SolarZenithAngle'])
-                    l1_ref.append(d['Band1/Radiance'])
+                    # TODO add reader for MSI data when they are included in L1A
+
+                else:  # this is a L1B bundle
+                    lon.append(np.array(d['Geolocation/Longitude']))
+                    lat.append(np.array(d['Geolocation/Latitude']))
+                    sza_tmp = np.array(d['Geolocation/SolarZenithAngle'])
+                    sza.append(sza_tmp)
+                    rad = np.array(d['Band1/Radiance'])
+                    I0_CH4 = 1.963e14  # approx I0 @ 1621 nm [photons/s/cm2/nm] 
+                                       # (from chance_jpl_mrg_hitran_200-16665nm.nc)
+                    l1_ref.append( np.pi * rad\
+                                   / (np.cos(np.pi * sza_tmp / 180.) * I0_CH4))
                     # L1B time is seconds since 1985-01-01
                     t0 = datetime(1985, 1, 1)
                     # just take median time, this is only to approximate MSI
                     time = t0+timedelta(hours=np.median(d['Geolocation/Time']))
                     yyyymmdd = int(time.strftime('%Y%m%d'))
+                    
+                    # TODO add reader for MSI data when they are included in L1B
 
             self.yyyymmdd = np.median(yyyymmdd)
+            # TODO also return MSI reflectance once available in L1
             return np.array(sza), np.array(l1_ref), np.array(lon), np.array(lat)
 
     def get_cloud_fraction(self, osse_path, l1_file, ix0, ixf):
