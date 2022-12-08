@@ -109,12 +109,14 @@ class cloudFilter(object):
                 self.ch4_a = np.zeros(filter_shape)
                 self.co2_a = np.zeros(filter_shape)
                 self.rms = np.zeros(filter_shape)
-
-               
+                self.ch4_lat = np.zeros(filter_shape)
+                self.ch4_lon = np.zeros(filter_shape)
+                self.o2_lat = np.zeros(filter_shape)
+                self.o2_lon = np.zeros(filter_shape)
 
         self.prefilter = np.zeros(filter_shape)
         self.prefilter_class_ratio = 0   # ratio cloudy/clear scenes in osse
-        self.binary_cloud_fraction_thresh = 0.1
+        self.binary_cloud_fraction_thresh = 0.5
         self.training_imbalance_thresh = 2   # maximum allowed class imbalance in training data
         self.quality_flag = np.zeros(filter_shape)   # TODO
         self.postfilter = np.zeros(filter_shape)
@@ -340,8 +342,11 @@ class cloudFilter(object):
         import os
         import sys
         import pickle
+        import sys
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
         import matplotlib.pyplot as plt
         from scipy import ndimage
+        import numpy as np
 
         print('apply_filter')
         print('read_l1()')
@@ -361,6 +366,21 @@ class cloudFilter(object):
             self.msi_ref = pickle.load(pkl_file)
             pkl_file.close()
 
+
+        #f, (ax1, ax2) = plt.subplots(2,1, figsize=(16,10), sharex=True)
+        #ax1.imshow(self.l1_ref[0,630,:,287:1143], vmin=0, vmax=0.5, aspect='auto')
+        #im0 = ax1.set_title('Measured Reflectance', fontsize=46)
+        #im = ax2.imshow(self.msi_ref[0,:,387:1243]-0.1, vmin=0, vmax=0.5, aspect='auto')
+        #ax2.plot([800,840],[195,195], c='black', linewidth=5)
+        #ax2.text(800,192,'1 km', fontsize=20)
+        #ax2.set_title('Sentinel-2 MSI Reflectance', fontsize=46)
+        #ax1.set_axis_off()
+        #ax2.set_axis_off()
+        #plt.tight_layout() 
+        #plt.savefig('MSI_demo.png', dpi=300)
+        #plt.show()
+        #sys.exit()
+
         #plt.subplot(311)
         #plt.title('L1B reflectance')
         #plt.imshow(self.l1_ref[0,630,:,:], vmin=0, vmax=1, aspect='auto')
@@ -370,18 +390,43 @@ class cloudFilter(object):
 
         self.msi_ref = ndimage.maximum_filter(self.msi_ref, size=(1,200,50))
 
+        self.msi_ref = self.msi_ref - 0.1 # empirical correction, MSI always too high
+
         #plt.subplot(313)
         #plt.title('Smoothed MSI reflectance')
         #plt.imshow(self.msi_ref[0,:,:], vmin=0, vmax=1, aspect='auto')
         #plt.tight_layout()
-        #plt.savefig('l1b_msi_offset.png', dpi=300)
+        #plt.savefig('l1b_msi_offset2.png', dpi=300)
         #plt.show()
+        sys.exit()
 
         print('read_l2()')
         self.read_l2()
+        plt.subplot(131)
+        plt.imshow(self.h2o1, vmin=0e23, vmax=2e23, aspect='auto')
+        plt.subplot(132)
+        plt.imshow(self.h2o2, vmin=0e23, vmax=2e23, aspect='auto')
+        plt.subplot(133)
+        plt.imshow(self.dp, aspect='auto')
+        plt.colorbar()
+        plt.show()
+        
+
+
+        plt.pcolor(self.ch4_lon, self.ch4_lat, self.h2o1, alpha=0.5, vmin=0e23, vmax=2e23)
+        plt.pcolor(self.o2_lon, self.o2_lat, self.h2o2, alpha=0.5, vmin=0e23, vmax=2e23)
+        plt.colorbar();plt.show()
+
+        plt.imshow(self.o2_lon);plt.show()
+        plt.imshow(self.dp);plt.show()
+        
+        sys.exit()
+        #plt.pcolormesh(self.ch4_lon[~np.isnan(self.ch4_lon)], self.ch4_lat[~np.isnan(self.ch4_lat)], self.rms[~np.isnan(self.ch4_lat)]);plt.show()
 
         print('interpolate to common grid')
-        #interpolate_all_l2_to_ch4grid()
+        from msat_netcdf.regrid import interpolate_to_new_grid
+        sys.path.insert(0,'/home/jwilzews/git-repos/msat-netcdf')
+        print('done')
 
     def read_l2(self):     
         import netCDF4 as nc
@@ -399,14 +444,28 @@ class cloudFilter(object):
         self.h2o1 = np.sum(np.array(l2_ch4['Posteriori_Profile/H2O_GasMixingRatio']) * np.array(l2_ch4['Posteriori_Profile/AirPartialColumn']), axis=0)
         self.ch4_a = np.sum(np.array(l2_ch4['Profile/CH4_GasMixingRatio']) * np.array(l2_ch4['Profile/AirPartialColumn']), axis=0)
         self.co2_a = np.sum(np.array(l2_ch4['Profile/CO2_GasMixingRatio']) * np.array(l2_ch4['Profile/AirPartialColumn']), axis=0)
-        self.rms = np.array(l2_ch4['SpecFitDiagnostics/FitResidualRMS']).squeeze().T
+        self.rms = np.array(l2_ch4['SpecFitDiagnostics/FitResidualRMS']).squeeze()
 
-        self.h2o2 = np.sum(np.array(l2_h2o['Posteriori_Profile/H2O_GasMixingRatio']) * np.array(l2_ch4['Posteriori_Profile/AirPartialColumn']), axis=0)
+        self.h2o2 = np.sum(np.array(l2_h2o['Posteriori_Profile/H2O_GasMixingRatio']) * np.array(l2_h2o['Posteriori_Profile/AirPartialColumn']), axis=0)
+        
 
         idx = self.find_psurf_in_state_vector(l2_o2['SpecFitDiagnostics/APosterioriState'])
         o2_psrf = l2_o2["SpecFitDiagnostics"]["APosterioriState"][idx, :, :]
         o2_psrf0 = l2_o2["SpecFitDiagnostics"]["APrioriState"][idx, :, :]
         self.dp = o2_psrf - o2_psrf0
+
+        # L1B geolocation of CO2-CH4 band
+        self.ch4_lon = np.array(l2_ch4['Level1/Longitude']).squeeze()
+        self.ch4_lat = np.array(l2_ch4['Level1/Latitude']).squeeze()
+        self.ch4_lon[np.abs(self.ch4_lon)>180] = np.nan
+        self.ch4_lat[np.abs(self.ch4_lat)>90] = np.nan
+        # L1B geolocation of O2-H2O band
+        # using the water vapor lon lat for now because the o2 test file has issues
+        self.o2_lon = np.array(l2_h2o['Level1/Longitude']).squeeze()
+        self.o2_lat = np.array(l2_h2o['Level1/Latitude']).squeeze()
+        self.o2_lon[np.abs(self.o2_lon)>180] = np.nan
+        self.o2_lat[np.abs(self.o2_lat)>90] = np.nan
+
 
     def find_psurf_in_state_vector(self, statevector):
         # statevector is netCDF4 variable from L2
@@ -421,7 +480,7 @@ class cloudFilter(object):
         from skimage.measure import label
         # min_pix_size: minimum of connected pixels to be retained as cloud
         # label connected pixel-areas
-        prefilter, num = label(prefilter, connectivity=2, return_num=True)
+        prefilter, num = label(prefilter, connectivity=1, return_num=True)
 
         for i in np.arange(1,num+1):
             n_pix = np.count_nonzero(prefilter == i)
@@ -439,6 +498,7 @@ class cloudFilter(object):
         import sys
         import os
         from scipy import ndimage
+        from skimage import measure
 
         print('read_l1()')
         self.l1_sza, self.l1_ref, l1_lon, l1_lat = self.read_l1()
@@ -458,6 +518,8 @@ class cloudFilter(object):
 
         # TODO this needs to be updated so higher reflectances are dominant
         self.msi_ref = ndimage.maximum_filter(self.msi_ref, size=(1,200,50))
+        # empirical correction
+        self.msi_ref = self.msi_ref -0.1
 
         X, order = self.prepare_prefilter_data()
 
@@ -475,7 +537,10 @@ class cloudFilter(object):
         self.prefilter = tmp
 
         # remove small clouds/misclassifications
-        self.prefilter = self.remove_clusters(self.prefilter, 500)
+        self.prefilter = self.remove_clusters(self.prefilter, 1000)
+
+        masked_pixels = np.ma.masked_where(self.prefilter == 0, self.prefilter)
+
         # ratio of flagged clouds to total pixels
         r_flagged = np.sum(self.prefilter)/np.count_nonzero(~np.isnan(self.l1_ref[630,:,:]))
         print('Fraction of potentially cloudy pixels: ', np.round(r_flagged, 2))
@@ -487,16 +552,19 @@ class cloudFilter(object):
         #    ind = np.where(np.nanmean(self.l1_ref, axis=0) < 0.1)
         #    self.prefilter[ind[0], ind[1]] = 1
         #    self.prefilter = self.remove_clusters(self.prefilter, 500)
-            
-        r_flagged = np.sum(self.prefilter)/np.count_nonzero(~np.isnan(self.l1_ref[630,:,:]))
-        print('Fraction of cloudy+shadowy pixels: ', np.round(r_flagged, 2))
+        #    
+        #r_flagged = np.sum(self.prefilter)/np.count_nonzero(~np.isnan(self.l1_ref[630,:,:]))
+        #print('Fraction of cloudy+shadowy pixels: ', np.round(r_flagged, 2))
 
-        plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
-        cb = plt.colorbar();cb.set_label('Reflectance')
-        masked_pixels = np.ma.masked_where(self.prefilter == 0, self.prefilter)
-        plt.imshow(masked_pixels, aspect='auto', cmap='autumn', alpha=0.5)
-        plt.xlabel('Along Track Index')
-        plt.ylabel('Across Track Index')
+        contours = measure.find_contours(masked_pixels, 0.0)
+        
+        plt.figure(figsize=(16,10))
+        ax = plt.subplot()
+        ax.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none',vmin=0, vmax=0.5)
+        for i in range(len(contours)):
+            ax.step(contours[i].T[1], contours[i].T[0], linewidth=2, c='r')
+        ax.set_axis_off()
+        plt.tight_layout()
         plt.savefig(self.l1_name+'_prefilter.png', dpi=300)
         plt.show()
         plt.imshow(self.l1_ref[630,:,:], aspect='auto', interpolation='none')
@@ -505,6 +573,7 @@ class cloudFilter(object):
         plt.xlabel('Along Track Index')
         plt.ylabel('Across Track Index')
         plt.savefig(self.l1_name+'_vs_msi_filtered.png', dpi=300)
+        plt.show()
 
         return self.prefilter
 
@@ -903,6 +972,43 @@ class cloudFilter(object):
                 # sorting based on decently bright spectrum, random selection, use clear granule!
                 ind = np.where((np.nanmean(ref, axis=0) > 0.3) & (np.nanmean(ref, axis=0) < 0.4))
                 order = np.argsort(ref[:,ind[0][0]])
+
+                ##plt.imshow(self.l1_ref[630,:,:], aspect='auto');plt.show()
+                #import matplotlib
+                #matplotlib.rcParams.update({'font.size': 22})
+
+                #f, (ax1, ax2) = plt.subplots(2,1, figsize=(16,10), sharex=True, gridspec_kw={'height_ratios':[1,4]})
+                #clear = self.l1_ref[:700,400,167]
+                #o1 = np.argsort(clear)
+                #cloud = self.l1_ref[:700,787,283]
+                #x = np.arange(len(cloud))
+
+                #ax1.set_title('Spectral Sorting Approach', fontsize=46)
+                #ax1.plot(cloud/np.nanmax(cloud),c='dodgerblue')
+                #ax1.plot(clear/np.nanmax(clear),c='darkorange')
+                #ax1.set_xlabel('Wavelength')
+
+                #ax2.plot(cloud[o1]/np.nanmax(cloud), alpha=0.5, c='dodgerblue')
+                #ax2.set_yticks([0.8, 1])
+
+                #z = np.polyfit(x, cloud[o1], 4)
+                #f = np.poly1d(z)
+                #
+                ## calculate new x's and y's
+                #x_new = np.linspace(x[25], x[-100], 50)
+                #y_new = f(x_new)
+                #
+                #ax2.plot(x_new, y_new/np.nanmax(cloud), label='cloud',c='dodgerblue', linewidth=3)
+
+                #ax2.plot(clear[o1]/np.nanmax(clear), label='clear', c='darkorange', linewidth=3)
+                ##ax2.text(300,0.8, 'Clouds shield the lower atmosphere\nthereby changing absorbtion depth in some spectral lines.', fontsize=46)
+                #plt.legend()
+                #ax2.set_ylabel('Reflectance (Normalized)')
+                #ax2.set_xlabel('Spectral Index')
+                #plt.tight_layout()
+                #plt.savefig('cloud_clear_sorting.png', dpi=300)
+                #plt.show()
+
                 print('Saving sorting order to ', sorting_order_file)
                 pkl_file = open(sorting_order_file, 'wb')
                 pickle.dump(order, pkl_file)
@@ -1435,7 +1541,7 @@ class cloudFilter(object):
                     h = int(time[:2])
                     mi = int(time[2:4])
                     s = int(time[4:6])
-                    t = datetime.datetime(y, mo, da, h, mi, s)
+                    t = datetime(y, mo, da, h, mi, s)
                     yyyymmdd.append(np.float(date[:4]+date[4:6]+date[6:8]))
  
                     lon_tmp = np.array(d.groups['Geolocation'].variables['Longitude'][:])
